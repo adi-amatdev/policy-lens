@@ -29,8 +29,8 @@ PolicyLens detects policy pages in your browser, extracts and analyzes each sect
 
 ```bash
 # Clone the repo
-git clone https://github.com/namaste-dev/terms-no-conditions.git
-cd terms-no-conditions
+git clone https://github.com/adi-amatdev/policy-lens.git
+cd policy-lens
 
 # Install dependencies
 npm install
