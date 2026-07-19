@@ -1,16 +1,16 @@
 # PolicyLens
 
-**Chrome extension that summarizes Terms & Conditions and privacy policies entirely on-device — so you know what you're agreeing to before you click "Accept."**
+**Chrome extension that summarizes Terms & Conditions and privacy policies entirely on-device, so you know what you're agreeing to before you click "Accept."**
 
 PolicyLens detects policy pages in your browser, extracts and summarizes each section into plain English using local ML models, flags risky clauses (forced arbitration, unilateral data sharing, liability waivers), and tracks changes over time so you're never blindsided by an update to a policy you already accepted.
 
 ## Features
 
-- **Local-first AI** — Summaries run on-device via Chrome's built-in Summarizer API or Transformers.js (Xenova/distilbart-cnn-6-6). No data leaves your browser.
-- **Change detection** — Stores a snapshot of every policy you visit. When a policy is updated, PolicyLens diffs the old and new versions and highlights exactly what changed.
-- **Risk flags** — Automatically flags clauses for data sharing, forced arbitration, auto-renewal, unilateral changes, liability waivers, and excessive data retention.
-- **Dashboard** — A dedicated tab (`chrome://extensions` → PolicyLens options) showing every tracked policy, its risk profile, and a history of changes.
-- **Auto-detection** — Recognizes policy pages by URL patterns (`/terms`, `/privacy`, `/legal`, etc.) and page structure (heading density + policy-specific keywords).
+- **Local-first AI:** Summaries run on-device via Chrome's built-in Summarizer API or Transformers.js (Xenova/distilbart-cnn-6-6). No data leaves your browser.
+- **Change detection:** Stores a snapshot of every policy you visit. When a policy is updated, PolicyLens diffs the old and new versions and highlights exactly what changed.
+- **Risk flags:** Automatically flags clauses for data sharing, forced arbitration, auto-renewal, unilateral changes, liability waivers, and excessive data retention.
+- **Dashboard:** A dedicated tab (`chrome://extensions` → PolicyLens options) showing every tracked policy, its risk profile, and a history of changes.
+- **Auto-detection:** Recognizes policy pages by URL patterns (`/terms`, `/privacy`, `/legal`, etc.) and page structure (heading density + policy-specific keywords).
 
 ## Screenshots
 
@@ -43,7 +43,7 @@ npm install
 # Build the extension
 npm run build
 
-# The output is in dist/ — load it as an unpacked extension:
+# The output is in dist/. Load it as an unpacked extension:
 # 1. Open chrome://extensions
 # 2. Enable "Developer mode" (top right)
 # 3. Click "Load unpacked"
@@ -74,11 +74,11 @@ This starts a Vite dev server and outputs an unpacked extension to `dist/` that 
 
 ```
 src/
-  background/     Service worker — orchestrates tab visits and storage
-  content/        Content script — extracts policy text from the DOM
+  background/     Service worker: orchestrates tab visits and storage
+  content/        Content script: extracts policy text from the DOM
   offscreen/      Offscreen document for model inference
-  popup/          Browser action popup — quick summary + risk flags
-  dashboard/      Options page — full policy history and change log
+  popup/          Browser action popup: quick summary + risk flags
+  dashboard/      Options page: full policy history and change log
   shared/         Core logic: detection, diffing, hashing, risk flags, model, storage
 demo/             Fixture HTML files for testing change detection
 ```

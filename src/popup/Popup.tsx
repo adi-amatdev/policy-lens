@@ -149,7 +149,7 @@ function FirstRunDialog({ onAcknowledged }: { onAcknowledged: () => void }) {
         <p className="mt-3 text-sm leading-6 text-slate-700">
           The services we use every day are governed by terms most of us never get time to read.
           This extension helps you notice the clauses that can affect your data, money, time, and
-          choices—so you can pause, understand the trade-off, and choose deliberately.
+          choices, so you can pause, understand the trade-off, and choose deliberately.
         </p>
         <p className="mt-3 text-sm leading-6 text-slate-700">
           It is privacy-first: policy text and summaries stay on your device, with no external API

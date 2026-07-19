@@ -2,7 +2,7 @@ import { defineManifest } from '@crxjs/vite-plugin'
 
 export default defineManifest({
   manifest_version: 3,
-  name: 'PolicyLens — Local T&C & Privacy Summarizer',
+  name: 'PolicyLens: Local T&C & Privacy Summarizer',
   version: '0.1.0',
   description:
     'Summarizes Terms & Conditions and privacy policies on-device, and tells you what changed since you last agreed.',

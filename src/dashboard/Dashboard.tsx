@@ -104,7 +104,7 @@ export default function Dashboard() {
                   <div className="flex items-center gap-2 mb-1">
                     <span className="text-sm font-medium text-gray-800">{c.domain}</span>
                     {c.headingText && (
-                      <span className="text-xs text-gray-400">— {c.headingText}</span>
+                      <span className="text-xs text-gray-400">: {c.headingText}</span>
                     )}
                     <span className="text-xs text-gray-400 ml-auto">
                       {new Date(c.changedAt).toLocaleString()}
