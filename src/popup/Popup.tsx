@@ -4,6 +4,7 @@ import { CATEGORY_LABELS, CATEGORY_COLORS } from '../shared/riskFlags'
 import { getWordDiff, type WordDiff } from '../shared/diffing'
 
 type Tab = 'summary' | 'risks' | 'changes'
+const FIRST_RUN_ACK_KEY = 'termsNoConditions.firstRunAcknowledged'
 
 export default function Popup() {
   const [activeTab, setActiveTab] = useState<Tab>('summary')
@@ -13,6 +14,13 @@ export default function Popup() {
   const [error, setError] = useState<string | null>(null)
   const [hasChanges, setHasChanges] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [showOnboarding, setShowOnboarding] = useState(false)
+
+  useEffect(() => {
+    chrome.storage.local.get(FIRST_RUN_ACK_KEY).then((stored) => {
+      setShowOnboarding(stored[FIRST_RUN_ACK_KEY] !== true)
+    })
+  }, [])
 
   useEffect(() => {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -46,6 +54,7 @@ export default function Popup() {
     return (
       <div className="w-[380px] p-4 text-center text-gray-500 text-sm">
         <div className="animate-pulse">Loading analysis...</div>
+        {showOnboarding && <FirstRunDialog onAcknowledged={() => setShowOnboarding(false)} />}
       </div>
     )
   }
@@ -56,6 +65,7 @@ export default function Popup() {
         <Disclaimer />
         <p className="text-gray-500 text-sm mt-2">{error}</p>
         <SettingsButton onClick={() => setShowSettings(true)} />
+        {showOnboarding && <FirstRunDialog onAcknowledged={() => setShowOnboarding(false)} />}
       </div>
     )
   }
@@ -111,6 +121,52 @@ export default function Popup() {
       </div>
 
       {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
+      {showOnboarding && <FirstRunDialog onAcknowledged={() => setShowOnboarding(false)} />}
+    </div>
+  )
+}
+
+function FirstRunDialog({ onAcknowledged }: { onAcknowledged: () => void }) {
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function acknowledge() {
+    setSaving(true)
+    setError(null)
+    try {
+      await chrome.storage.local.set({ [FIRST_RUN_ACK_KEY]: true })
+      onAcknowledged()
+    } catch {
+      setError('We could not save your choice. Please try again.')
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="absolute inset-0 z-10 flex items-center bg-slate-950/45 p-4">
+      <section className="w-full rounded-xl bg-white p-5 text-left shadow-xl" aria-labelledby="first-run-title">
+        <h1 id="first-run-title" className="text-lg font-semibold text-slate-900">Terms &amp; No Conditions</h1>
+        <p className="mt-3 text-sm leading-6 text-slate-700">
+          The services we use every day are governed by terms most of us never get time to read.
+          This extension helps you notice the clauses that can affect your data, money, time, and
+          choices—so you can pause, understand the trade-off, and choose deliberately.
+        </p>
+        <p className="mt-3 text-sm leading-6 text-slate-700">
+          It is privacy-first: policy text and summaries stay on your device, with no external API
+          calls. If Chrome's on-device Gemini Nano is unavailable, the extension may download a
+          local model once so it can continue working on your device.
+        </p>
+        <p className="mt-3 text-xs text-slate-500">AI-generated summaries are not legal advice.</p>
+        {error && <p className="mt-3 text-xs text-red-600" role="alert">{error}</p>}
+        <button
+          type="button"
+          onClick={acknowledge}
+          disabled={saving}
+          className="mt-5 w-full rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {saving ? 'Saving…' : 'OK, I understand'}
+        </button>
+      </section>
     </div>
   )
 }
