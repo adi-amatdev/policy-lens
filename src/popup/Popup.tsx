@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import type { ExtensionMessage, SectionRecord, ChangeRecord } from '../shared/messages'
 import { CATEGORY_LABELS, CATEGORY_COLORS } from '../shared/riskFlags'
 import { getWordDiff, type WordDiff } from '../shared/diffing'
@@ -9,9 +9,8 @@ const FIRST_RUN_ACK_KEY = 'termsNoConditions.firstRunAcknowledged'
 
 const ANALYZING_STEPS = [
   'Extracting page content...',
-  'Identifying policy sections...',
-  'Running risk analysis...',
-  'Generating summaries...',
+  'Running on-device ML analysis...',
+  'Saving results...',
 ]
 
 const DOT_COLORS: Record<string, string> = {
@@ -34,21 +33,12 @@ function timeAgo(ts: number): string {
   return `${days}d ago`
 }
 
-function isReportMode() {
-  const params = new URLSearchParams(window.location.search)
-  return params.get('view') === 'report'
-}
-
-function getReportUrl() {
-  const params = new URLSearchParams(window.location.search)
-  return params.get('url') || ''
+function promisifySendMessage(msg: ExtensionMessage): Promise<any> {
+  return new Promise((resolve) => chrome.runtime.sendMessage(msg, resolve))
 }
 
 export default function Popup() {
-  const reportMode = isReportMode()
-  const reportUrl = getReportUrl()
-
-  const [pageState, setPageState] = useState<PageState>(reportMode ? 'loading' : 'loading')
+  const [pageState, setPageState] = useState<PageState>('loading')
   const [activeTab, setActiveTab] = useState<Tab>('summary')
   const [sections, setSections] = useState<SectionRecord[]>([])
   const [changes, setChanges] = useState<ChangeRecord[]>([])
@@ -58,163 +48,90 @@ export default function Popup() {
   const [tabDomain, setTabDomain] = useState('')
   const [analyzing, setAnalyzing] = useState(false)
   const [analyzeStep, setAnalyzeStep] = useState(0)
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const [analyzeError, setAnalyzeError] = useState('')
 
   useEffect(() => {
-    if (!reportMode) {
-      chrome.storage.local.get(FIRST_RUN_ACK_KEY).then((stored) => {
-        if (stored[FIRST_RUN_ACK_KEY] !== true) setShowOnboarding(true)
-      })
-    }
-  }, [reportMode])
+    chrome.storage.local.get(FIRST_RUN_ACK_KEY).then((stored) => {
+      if (stored[FIRST_RUN_ACK_KEY] !== true) setShowOnboarding(true)
+    })
+  }, [])
 
   useEffect(() => {
-    if (pageState !== 'analyzing') { setAnalyzeStep(0); return }
-    const t = setInterval(() => setAnalyzeStep((p) => Math.min(p + 1, ANALYZING_STEPS.length - 1)), 2500)
-    return () => clearInterval(t)
-  }, [pageState])
-
-  const fetchAnalysis = useCallback((urlOverride?: string): Promise<boolean> => {
-    return new Promise((resolve) => {
-      const targetUrl = urlOverride || reportUrl
-      if (reportMode && targetUrl) {
-        chrome.runtime.sendMessage(
-          { type: 'GET_ANALYSIS_FOR_TAB', tabUrl: targetUrl } as ExtensionMessage,
-          (response: any) => {
-            if (response?.type === 'ANALYSIS_RESULT') {
-              const s = response.sections || []
-              const c = response.changes || []
-              if (s.length > 0) {
-                setSections(s); setChanges(c); setPageState('results')
-                if (c.length > 0) { setHasChanges(true); setActiveTab('changes') }
-                resolve(true); return
-              }
-            }
-            resolve(false)
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const url = tabs[0]?.url
+      if (!url) { setPageState('no-data'); return }
+      try { setTabDomain(new URL(url).hostname) } catch {}
+      promisifySendMessage({ type: 'GET_ANALYSIS_FOR_TAB', tabUrl: url } as ExtensionMessage).then((response: any) => {
+        if (response?.type === 'ANALYSIS_RESULT') {
+          const s = response.sections || []
+          const c = response.changes || []
+          if (s.length > 0) {
+            setSections(s); setChanges(c); setPageState('results')
+            if (c.length > 0) { setHasChanges(true); setActiveTab('changes') }
+            return
           }
-        )
+        }
+        setPageState('no-data')
+      })
+    })
+  }, [])
+
+  async function handleAnalyze() {
+    setAnalyzing(true); setPageState('analyzing'); setAnalyzeError('')
+
+    try {
+      setAnalyzeStep(0)
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true })
+      if (!tabs[0]?.id) { fail('No active tab'); return }
+
+      setAnalyzeStep(1)
+      const response: any = await promisifySendMessage({ type: 'ANALYZE_PAGE', tabId: tabs[0].id } as ExtensionMessage)
+
+      setAnalyzeStep(2)
+      if (response?.ok && response.sections?.length > 0) {
+        setSections(response.sections || [])
+        setChanges(response.changes || [])
+        if (response.changes?.length > 0) { setHasChanges(true); setActiveTab('changes') }
+        setAnalyzing(false); setPageState('results')
       } else {
-        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-          const url = tabs[0]?.url
-          if (!url) { setPageState('no-data'); resolve(false); return }
-          try { setTabDomain(new URL(url).hostname) } catch {}
-          chrome.runtime.sendMessage(
-            { type: 'GET_ANALYSIS_FOR_TAB', tabUrl: url } as ExtensionMessage,
-            (response: any) => {
-              if (response?.type === 'ANALYSIS_RESULT') {
-                const s = response.sections || []
-                const c = response.changes || []
-                if (s.length > 0) {
-                  setSections(s); setChanges(c); setPageState('results')
-                  if (c.length > 0) { setHasChanges(true); setActiveTab('changes') }
-                  resolve(true); return
-                }
-              }
-              resolve(false)
-            }
-          )
-        })
+        fail(response?.error || 'No policy content found on this page')
       }
-    })
-  }, [reportMode, reportUrl])
-
-  useEffect(() => {
-    if (reportMode) {
-      fetchAnalysis(reportUrl).then((found) => { if (!found) setPageState('no-data') })
-    } else {
-      fetchAnalysis().then((found) => { if (!found) setPageState('no-data') })
+    } catch (e) {
+      console.error('[Popup] Analyze failed:', e)
+      fail(String(e))
     }
-  }, [fetchAnalysis, reportUrl, reportMode])
 
-  function openReportWindow(url: string) {
-    const reportPageUrl = chrome.runtime.getURL(`src/popup/popup.html?view=report&url=${encodeURIComponent(url)}`)
-    chrome.windows.create({ url: reportPageUrl, type: 'popup', width: 700, height: 720 })
+    function fail(msg: string) { setAnalyzing(false); setAnalyzeError(msg); setPageState('no-data') }
   }
-
-  function handleAnalyze() {
-    setAnalyzing(true); setPageState('analyzing')
-    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
-      if (!tabs[0]?.id) { setAnalyzing(false); setPageState('no-data'); return }
-      const currentUrl = tabs[0].url!
-      try {
-        const res: any = await new Promise((r) => {
-          chrome.runtime.sendMessage({ type: 'ANALYZE_PAGE', tabId: tabs[0].id } as ExtensionMessage, r)
-        })
-        if (res?.ok) {
-          setAnalyzing(false)
-          openReportWindow(currentUrl)
-          return
-        }
-      } catch (e) { console.error('[Popup] Analyze failed:', e) }
-      let elapsed = 0
-      if (pollRef.current) clearInterval(pollRef.current)
-      pollRef.current = setInterval(async () => {
-        elapsed += 3000
-        const check: any = await new Promise((r) => {
-          chrome.runtime.sendMessage({ type: 'GET_ANALYSIS_FOR_TAB', tabUrl: currentUrl } as ExtensionMessage, r)
-        })
-        if (check?.type === 'ANALYSIS_RESULT' && check.sections?.length > 0) {
-          clearInterval(pollRef.current!); setAnalyzing(false)
-          openReportWindow(currentUrl)
-        } else if (elapsed >= 15000) {
-          clearInterval(pollRef.current!); setAnalyzing(false); setPageState('no-data')
-        }
-      }, 3000)
-    })
-  }
-
-  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current) }, [])
 
   const allRiskFlags = sections.flatMap((s) => s.riskFlags)
 
   return (
-    <div className={`${reportMode ? 'min-h-screen bg-gray-50' : 'w-[340px]'} flex flex-col bg-white`}>
-      {/* Header */}
-      <div className={`flex items-center justify-between px-4 py-2.5 border-b shrink-0 ${reportMode ? 'bg-white sticky top-0 z-10 shadow-sm' : ''}`}>
+    <div className="w-[440px] max-h-[600px] flex flex-col bg-white">
+      <div className="flex items-center justify-between px-4 py-2.5 border-b shrink-0">
         <div className="flex items-center gap-2">
-          {reportMode && (
-            <button onClick={() => window.close()} className="text-gray-400 hover:text-gray-600">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
-          )}
           <span className="text-sm font-semibold text-gray-900">PolicyLens</span>
-          {!reportMode && (
-            <span className="text-[10px] text-gray-400">AI summary, not legal advice</span>
-          )}
+          <span className="text-[10px] text-gray-400">AI summary, not legal advice</span>
         </div>
         <div className="flex items-center gap-1">
-          {!reportMode && (
-            <button onClick={() => chrome.runtime.openOptionsPage()}
-              className="text-xs text-gray-500 hover:text-indigo-600 px-2 py-1 rounded hover:bg-gray-100 transition-colors">
-              Dashboard
-            </button>
-          )}
-          {reportMode && (
-            <button onClick={() => window.close()}
-              className="text-xs px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg font-medium transition-colors">
-              Done
-            </button>
-          )}
-          {!reportMode && (
-            <button onClick={() => setShowSettings(!showSettings)}
-              className="text-xs text-gray-400 hover:text-gray-600 px-1.5 py-1 rounded hover:bg-gray-100 transition-colors" title="Settings">
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-              </svg>
-            </button>
-          )}
+          <button onClick={() => chrome.runtime.openOptionsPage()}
+            className="text-xs text-gray-500 hover:text-indigo-600 px-2 py-1 rounded hover:bg-gray-100 transition-colors">
+            Dashboard
+          </button>
+          <button onClick={() => setShowSettings(!showSettings)}
+            className="text-xs text-gray-400 hover:text-gray-600 px-1.5 py-1 rounded hover:bg-gray-100 transition-colors" title="Settings">
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+          </button>
         </div>
       </div>
 
-      {/* Settings (popup mode only) */}
-      {!reportMode && showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
+      {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
 
-      {/* Tab bar - fixed when results */}
       {pageState === 'results' && (
-        <div className={`shrink-0 px-4 pt-2 pb-1.5 border-b ${reportMode ? 'bg-white' : ''}`}>
+        <div className="shrink-0 px-4 pt-2 pb-1.5 border-b">
           <div className="flex items-center justify-between mb-1.5">
             <div className="flex gap-1">
               <TabBtn label="Summary" active={activeTab === 'summary'} onClick={() => setActiveTab('summary')} />
@@ -234,11 +151,11 @@ export default function Popup() {
             <span className="text-gray-300">&middot;</span>
             <span>Re-analyze to detect changes</span>
           </div>
+          <ModelStatusBadge sections={sections} />
         </div>
       )}
 
-      {/* SCROLLABLE content */}
-      <div className={`flex-1 overflow-y-auto min-h-0 ${reportMode ? 'px-6 py-4 max-w-3xl mx-auto w-full' : 'px-4 py-3'}`}>
+      <div className="flex-1 overflow-y-auto min-h-0 px-4 py-3">
         {pageState === 'loading' && (
           <div className="flex items-center justify-center py-12">
             <div className="animate-pulse text-sm text-gray-400">Loading...</div>
@@ -253,8 +170,8 @@ export default function Popup() {
           </>
         )}
 
-        {pageState === 'no-data' && !reportMode && (
-          <div className="py-8 flex flex-col items-center text-center">
+        {pageState === 'no-data' && (
+          <div className="py-6 flex flex-col items-center text-center">
             <div className="w-12 h-12 rounded-full bg-indigo-50 flex items-center justify-center mb-3">
               <svg className="w-6 h-6 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
@@ -262,27 +179,17 @@ export default function Popup() {
             </div>
             <p className="text-sm font-medium text-gray-700 mb-0.5">No Analysis Yet</p>
             {tabDomain && <p className="text-xs text-gray-500 mb-0.5">Current page: <span className="font-medium text-gray-600">{tabDomain}</span></p>}
-            <p className="text-xs text-gray-400 mb-4 max-w-[280px] leading-relaxed">
+            <p className="text-xs text-gray-400 mb-3 max-w-[320px] leading-relaxed">
               Scan this page for a breakdown of terms, privacy risks, and policy changes.
             </p>
+            {analyzeError && (
+              <p className="text-xs text-red-500 mb-2">{analyzeError}</p>
+            )}
             <button onClick={handleAnalyze} disabled={analyzing}
               className="w-full py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 text-white text-sm font-medium rounded-lg transition-colors">
               Analyze This Page
             </button>
-            <div className="mt-3 space-y-0.5">
-              <p className="text-[10px] text-gray-300">Runs locally in your browser</p>
-              <p className="text-[10px] text-gray-300">Re-analyze later to detect policy changes</p>
-            </div>
-          </div>
-        )}
-
-        {pageState === 'no-data' && reportMode && (
-          <div className="text-center py-12">
-            <p className="text-gray-400 text-sm mb-3">No analysis found for this page.</p>
-            <button onClick={() => window.close()}
-              className="px-4 py-2 bg-gray-200 text-gray-700 text-sm rounded-lg hover:bg-gray-300 transition-colors">
-              Close
-            </button>
+            <p className="text-[10px] text-gray-300 mt-2">Runs locally in your browser</p>
           </div>
         )}
 
@@ -307,8 +214,7 @@ export default function Popup() {
         )}
       </div>
 
-      {/* Footer (popup mode only) */}
-      {!reportMode && (
+      {pageState === 'results' && (
         <div className="px-4 py-2 border-t shrink-0">
           <div className="flex items-center justify-between">
             <button onClick={handleAnalyze} disabled={analyzing}
@@ -328,6 +234,37 @@ export default function Popup() {
       )}
 
       {showOnboarding && <OnboardingDialog onDismiss={() => setShowOnboarding(false)} />}
+    </div>
+  )
+}
+
+function ModelStatusBadge({ sections }: { sections: SectionRecord[] }) {
+  const allUsedModel = sections.length > 0 && sections.every((s) => s.modelUsed)
+  const noneUsedModel = sections.length > 0 && sections.every((s) => !s.modelUsed)
+
+  if (sections.length === 0) return null
+
+  return (
+    <div className="mt-1 flex items-center gap-1.5">
+      {allUsedModel ? (
+        <>
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
+          <span className="text-[10px] text-emerald-600 font-medium">ML model active</span>
+          <span className="text-[10px] text-gray-400">&middot; semantic analysis + keyword detection</span>
+        </>
+      ) : noneUsedModel ? (
+        <>
+          <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
+          <span className="text-[10px] text-amber-600 font-medium">Keyword-only mode</span>
+          <span className="text-[10px] text-gray-400">&middot; model unavailable, deterministic fallback</span>
+        </>
+      ) : (
+        <>
+          <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />
+          <span className="text-[10px] text-blue-600 font-medium">Mixed</span>
+          <span className="text-[10px] text-gray-400">&middot; some sections used ML</span>
+        </>
+      )}
     </div>
   )
 }

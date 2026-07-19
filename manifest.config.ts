@@ -30,6 +30,9 @@ export default defineManifest({
   permissions: ['storage', 'activeTab', 'scripting', 'offscreen'],
   host_permissions: ['<all_urls>'],
   options_page: 'src/dashboard/dashboard.html',
+  content_security_policy: {
+    extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
+  },
   web_accessible_resources: [
     {
       resources: ['src/popup/popup.html'],

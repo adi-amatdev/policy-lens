@@ -1,10 +1,11 @@
 import type { ExtensionMessage, ExtractedSection, SectionResult } from '../shared/messages'
-import { summarizeSection, classifyRisk, explainDiff, loadModelInBackground } from '../shared/model'
+import { analyzeSection, explainDiff } from '../shared/model'
 import { sha256 } from '../shared/hashing'
 
-console.log('[Offscreen] Document loaded')
+console.log('[Offscreen] Document loaded, signaling ready')
+chrome.runtime.sendMessage({ type: 'OFFSCREEN_READY' } as ExtensionMessage)
 
-chrome.runtime.onMessage.addListener((msg: ExtensionMessage) => {
+chrome.runtime.onMessage.addListener((msg: ExtensionMessage, _sender, _sendResponse) => {
   console.log('[Offscreen] Received:', msg.type)
   switch (msg.type) {
     case 'SUMMARIZE_SECTIONS':
@@ -16,29 +17,19 @@ chrome.runtime.onMessage.addListener((msg: ExtensionMessage) => {
   }
 })
 
-chrome.runtime.sendMessage({ type: 'OFFSCREEN_READY' } as ExtensionMessage)
-console.log('[Offscreen] Sent OFFSCREEN_READY')
-
-loadModelInBackground()
-
 async function handleSummarize(docId: string, sections: ExtractedSection[]) {
   console.log(`[Offscreen] Summarizing ${sections.length} sections for ${docId}`)
   const results: SectionResult[] = []
 
   for (const section of sections) {
     try {
-      const summary = await summarizeSection(section)
-      const riskFlags = await classifyRisk(section.bodyText)
+      const analyzed = await analyzeSection(section)
       const bodyHash = await sha256(section.bodyText)
       results.push({
-        sectionId: section.id,
-        headingText: section.headingText,
-        bodyText: section.bodyText,
+        ...analyzed,
         bodyHash,
-        summary,
-        riskFlags,
       })
-      console.log(`[Offscreen] Section "${section.headingText}" done (${riskFlags.length} risks)`)
+      console.log(`[Offscreen] Section "${section.headingText}" done (${analyzed.riskFlags.length} risks)`)
     } catch (e) {
       console.error(`[Offscreen] Section "${section.headingText}" failed:`, e)
       results.push({
@@ -48,11 +39,12 @@ async function handleSummarize(docId: string, sections: ExtractedSection[]) {
         bodyHash: '',
         summary: section.bodyText.slice(0, 200) + '...',
         riskFlags: [],
+        modelUsed: false,
       })
     }
   }
 
-  console.log(`[Offscreen] Sending ${results.length} results`)
+  console.log(`[Offscreen] Sending ${results.length} results back`)
   chrome.runtime.sendMessage({ type: 'SUMMARIZE_RESULT', docId, results } as ExtensionMessage)
 }
 

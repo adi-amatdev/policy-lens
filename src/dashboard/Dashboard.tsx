@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 import type { ExtensionMessage, SectionRecord, ChangeRecord, RiskFlag } from '../shared/messages'
 import { CATEGORY_LABELS, CATEGORY_COLORS } from '../shared/riskFlags'
 import { getWordDiff, type WordDiff } from '../shared/diffing'
-import { getAllSections, getChangesForDoc, getAllDocs, getAllChanges, type DocRecord } from '../shared/storage'
+import { getAllSections, getChangesForDoc, getAllDocs, type DocRecord } from '../shared/storage'
 
 type View = 'list' | 'detail'
 type SortMode = 'latest-read' | 'latest-change'

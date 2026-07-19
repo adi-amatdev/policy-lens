@@ -26,6 +26,7 @@ export interface SectionResult {
   bodyHash: string
   summary: string
   riskFlags: RiskFlag[]
+  modelUsed: boolean
 }
 
 export interface DomainSummary {
@@ -44,6 +45,7 @@ export interface SectionRecord {
   bodyHash: string
   summary: string
   riskFlags: RiskFlag[]
+  modelUsed: boolean
   savedAt: number
 }
 
@@ -68,6 +70,8 @@ export type ExtensionMessage =
   | { type: 'GET_ANALYSIS_FOR_TAB'; tabUrl: string }
   | { type: 'ANALYSIS_RESULT'; docId: string | null; sections: SectionRecord[]; changes: ChangeRecord[] }
   | { type: 'ANALYZE_PAGE'; tabId: number }
+  | { type: 'EXTRACT_PAGE'; tabId: number }
+  | { type: 'SAVE_ANALYSIS'; docId: string; domain: string; docType: string; results: SectionResult[] }
   | { type: 'EXTRACT_AND_DETECT' }
   | { type: 'ANALYSIS_COMPLETE' }
   | { type: 'GET_DASHBOARD_DATA' }

@@ -1,10 +1,28 @@
-import type { ExtensionMessage, ExtractedSection, SectionResult, SectionRecord, RiskFlag } from '../shared/messages'
+import type { ExtensionMessage, ExtractedSection, SectionResult, SectionRecord } from '../shared/messages'
 import { upsertDocument, saveSections, getSections, saveChange, getAllDomains, setDocLastChanged, getDoc, getChangesForDoc } from '../shared/storage'
 import { sha256 } from '../shared/hashing'
 
+const OFFSCREEN_URL = 'src/offscreen/offscreen.html'
+const ANALYSIS_TIMEOUT_MS = 120_000
+
+const pendingAnalysis = new Map<string, { resolve: (results: SectionResult[]) => void; timer: ReturnType<typeof setTimeout> }>()
+
 chrome.runtime.onMessage.addListener((msg: ExtensionMessage, sender, sendResponse) => {
   console.log('[BG] Received:', msg.type)
+
   switch (msg.type) {
+    case 'EXTRACT_PAGE':
+      handleExtractPage(msg.tabId).then(sendResponse).catch((e) => {
+        console.error('[BG] EXTRACT_PAGE failed:', e)
+        sendResponse({ sections: [] })
+      })
+      return true
+    case 'SAVE_ANALYSIS':
+      handleSaveAnalysis(msg.docId, msg.domain, msg.docType, msg.results).then(sendResponse).catch((e) => {
+        console.error('[BG] SAVE_ANALYSIS failed:', e)
+        sendResponse({ ok: false })
+      })
+      return true
     case 'ANALYZE_PAGE':
       handleAnalyzePage(msg.tabId).then(sendResponse).catch((e) => {
         console.error('[BG] ANALYZE_PAGE failed:', e)
@@ -23,8 +41,69 @@ chrome.runtime.onMessage.addListener((msg: ExtensionMessage, sender, sendRespons
     case 'DELETE_MODEL_CACHE':
       deleteModelCache().then(() => sendResponse({ type: 'MODEL_CACHE_DELETED' }))
       return true
+    case 'SUMMARIZE_RESULT': {
+      const key = `${msg.docId}`
+      const pending = pendingAnalysis.get(key)
+      if (pending) {
+        clearTimeout(pending.timer)
+        pending.resolve(msg.results)
+        pendingAnalysis.delete(key)
+        console.log(`[BG] Resolved pending analysis for ${key} (${msg.results.length} results)`)
+      }
+      break
+    }
+    case 'DIFF_RESULT': {
+      console.log('[BG] Received diff result for', msg.docId, msg.sectionId)
+      break
+    }
   }
 })
+
+async function ensureOffscreenDocument(): Promise<void> {
+  try {
+    const existingContexts = await chrome.runtime.getContexts({
+      contextTypes: ['OFFSCREEN_DOCUMENT'],
+    })
+    if (existingContexts.length > 0) {
+      console.log('[BG] Offscreen document already exists')
+      return
+    }
+  } catch {
+    // getContexts may not exist in older Chrome versions; fall through to try create
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    const readyListener = (msg: ExtensionMessage) => {
+      if (msg.type === 'OFFSCREEN_READY') {
+        chrome.runtime.onMessage.removeListener(readyListener)
+        console.log('[BG] Offscreen document ready')
+        resolve()
+      }
+    }
+    chrome.runtime.onMessage.addListener(readyListener)
+
+    chrome.offscreen.createDocument({
+      url: OFFSCREEN_URL,
+      reasons: ['DOM_SCRAPING' as any],
+      justification: 'Runs Transformers.js WASM inference for policy analysis',
+    }).then(() => {
+      console.log('[BG] Offscreen document created, waiting for ready signal')
+      // Timeout fallback in case ready signal never arrives
+      setTimeout(() => {
+        chrome.runtime.onMessage.removeListener(readyListener)
+        resolve()
+      }, 5000)
+    }).catch((e: any) => {
+      chrome.runtime.onMessage.removeListener(readyListener)
+      if (e.message?.includes('already exists')) {
+        console.log('[BG] Offscreen document already exists')
+        resolve()
+      } else {
+        reject(e)
+      }
+    })
+  })
+}
 
 function extractPageContent() {
   const url = window.location.href
@@ -88,139 +167,107 @@ function extractPageContent() {
   return { url, hostname, title, sections, docType }
 }
 
-async function handleAnalyzePage(tabId: number): Promise<{ ok: boolean; sectionCount: number }> {
-  console.log(`[BG] ANALYZE_PAGE tab=${tabId}`)
-
+async function handleExtractPage(tabId: number) {
   const [{ result: extracted }] = await chrome.scripting.executeScript({
     target: { tabId },
     func: extractPageContent,
   })
-
   if (!extracted || !extracted.sections || extracted.sections.length === 0) {
-    console.warn('[BG] No sections extracted from page')
-    return { ok: false, sectionCount: 0 }
+    return { docId: null, domain: null, docType: null, sections: [] }
   }
-
   const { url, hostname, sections, docType } = extracted
   const docId = `${hostname}::${url}`
-  console.log(`[BG] Extracted ${sections.length} sections from ${hostname}`)
+  return { docId, domain: hostname, docType, sections }
+}
 
-  await upsertDocument({
-    docId, domain: hostname, docUrl: url, docType, discoveredVia: 'user-visit',
-  })
+async function handleSaveAnalysis(docId: string, domain: string, docType: string, results: SectionResult[]) {
+  await upsertDocument({ docId, domain, docUrl: docId.split('::')[1], docType, discoveredVia: 'user-visit' })
 
   const existing = await getSections(docId)
   if (existing.length > 0) {
-    await processChanges(docId, hostname, existing, sections)
-  }
-
-  const results = summarizeSectionsDirectly(sections)
-  await saveResults(docId, results)
-  await updateBadgeForDomain(hostname)
-
-  console.log(`[BG] ANALYZE_PAGE complete: ${results.length} sections saved`)
-  return { ok: true, sectionCount: results.length }
-}
-
-function summarizeSectionsDirectly(sections: ExtractedSection[]): SectionResult[] {
-  return sections.map((section) => {
-    const summary = extractiveSummarize(section.bodyText)
-    const riskFlags = keywordRiskFlags(section.bodyText)
-    return {
-      sectionId: section.id,
-      headingText: section.headingText,
-      bodyText: section.bodyText,
-      bodyHash: '',
-      summary,
-      riskFlags,
-    }
-  })
-}
-
-function extractiveSummarize(text: string): string {
-  const sentences = text.match(/[^.!?]+[.!?]+/g) || []
-  if (sentences.length === 0) return text.slice(0, 300) || 'No content extracted.'
-  return sentences.slice(0, 3).map((s) => s.trim()).join(' ')
-}
-
-function keywordRiskFlags(bodyText: string): RiskFlag[] {
-  const lower = bodyText.toLowerCase()
-  const flags: RiskFlag[] = []
-
-  const checks: [RiskFlag['category'], string[], string][] = [
-    ['arbitration', ['arbitration', 'mandatory arbitration', 'binding arbitration', 'class action waiver'], 'Requires binding arbitration — you waive your right to sue in court or join a class action'],
-    ['data-sharing', ['share your data', 'third-party', 'third parties', 'data sharing', 'sell your data', 'advertising partners'], 'Your data may be shared with or sold to third parties for advertising or other purposes'],
-    ['auto-renewal', ['auto-renew', 'automatically renew', 'subscription renew'], 'Subscriptions renew automatically — you may be charged unless you cancel before the renewal date'],
-    ['unilateral-changes', ['we reserve the right to modify', 'we may change', 'at our sole discretion', 'without notice'], 'The company can change these terms at any time without notifying you'],
-    ['liability-waiver', ['not liable', 'no liability', 'as-is', 'without warranty', 'limitation of liability'], 'The company disclaims liability — you cannot hold them responsible for damages or losses'],
-    ['data-retention', ['retain', 'retention', 'store your data', 'data stored', 'keep your data'], 'Your data is stored and retained — the policy may not specify when it is deleted'],
-  ]
-
-  const sentences = bodyText.match(/[^.!?]+[.!?]+/g) || []
-
-  for (const [category, keywords, reason] of checks) {
-    for (const kw of keywords) {
-      const idx = lower.indexOf(kw)
-      if (idx !== -1) {
-        let snippet = ''
-        for (const sentence of sentences) {
-          if (sentence.toLowerCase().includes(kw)) {
-            snippet = sentence.trim()
-            break
-          }
-        }
-        if (!snippet) {
-          const start = Math.max(0, idx - 50)
-          const end = Math.min(bodyText.length, idx + kw.length + 50)
-          snippet = bodyText.slice(start, end).trim()
-          if (start > 0) snippet = '...' + snippet
-          if (end < bodyText.length) snippet = snippet + '...'
-        }
-        flags.push({ category, reason, snippet })
+    for (const old of existing) {
+      const newResult = results.find((r) => r.sectionId === old.sectionId)
+      if (newResult && newResult.bodyHash && newResult.bodyHash !== old.bodyHash) {
+        await setDocLastChanged(docId, Date.now())
+        const oldSentences = new Set((old.bodyText.match(/[^.!?]+[.!?]+/g) || []).map((x) => x.trim().toLowerCase()))
+        const added = (newResult.bodyText.match(/[^.!?]+[.!?]+/g) || []).map((x) => x.trim()).filter((x) => !oldSentences.has(x.toLowerCase()))
+        const diffSummary = added.length > 0 ? `New content added: ${added.slice(0, 2).join(' ').slice(0, 300)}` : 'This section was modified.'
+        await saveChange({ docId, sectionId: old.sectionId, headingText: old.headingText, changedAt: Date.now(), oldText: old.bodyText, newText: newResult.bodyText, diffSummary, domain })
         break
       }
     }
   }
 
-  return flags
-}
-
-async function saveResults(docId: string, results: SectionResult[]) {
   const records: SectionRecord[] = results.map((r) => ({
     sectionKey: `${docId}::${r.sectionId}`,
     docId, sectionId: r.sectionId, headingText: r.headingText,
     bodyText: r.bodyText, bodyHash: r.bodyHash, summary: r.summary,
-    riskFlags: r.riskFlags, savedAt: Date.now(),
+    riskFlags: r.riskFlags, modelUsed: r.modelUsed, savedAt: Date.now(),
   }))
   await saveSections(records)
+  await updateBadgeForDomain(domain)
+  return { ok: true }
 }
 
-async function processChanges(docId: string, domain: string, existing: SectionRecord[], newSections: ExtractedSection[], tabId?: number) {
-  const newHashes = new Map<string, string>()
-  for (const s of newSections) {
-    newHashes.set(s.id, await sha256(s.bodyText))
+async function handleAnalyzePage(tabId: number): Promise<{ ok: boolean; docId?: string; sections?: SectionRecord[]; changes?: any[]; error?: string }> {
+  const [{ result: extracted }] = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: extractPageContent,
+  })
+  if (!extracted || !extracted.sections || extracted.sections.length === 0) {
+    return { ok: false, sections: [], changes: [], error: 'No policy content found on this page' }
   }
-  for (const old of existing) {
-    const newHash = newHashes.get(old.sectionId)
-    if (newHash && newHash !== old.bodyHash) {
-      const s = newSections.find((n) => n.id === old.sectionId)
-      if (s) {
-        await setDocLastChanged(docId, Date.now())
-        const oldSentences = new Set((old.bodyText.match(/[^.!?]+[.!?]+/g) || []).map((x) => x.trim().toLowerCase()))
-        const added = (s.bodyText.match(/[^.!?]+[.!?]+/g) || []).map((x) => x.trim()).filter((x) => !oldSentences.has(x.toLowerCase()))
-        const diffSummary = added.length > 0 ? `New content added: ${added.slice(0, 2).join(' ').slice(0, 300)}` : 'This section was modified.'
-        await saveChange({ docId, sectionId: old.sectionId, headingText: old.headingText, changedAt: Date.now(), oldText: old.bodyText, newText: s.bodyText, diffSummary, domain })
-        break
+  const { url, hostname, sections, docType } = extracted
+  const docId = `${hostname}::${url}`
+
+  await upsertDocument({ docId, domain: hostname, docUrl: url, docType, discoveredVia: 'user-visit' })
+
+  // Detect changes against previously saved sections
+  const existing = await getSections(docId)
+  if (existing.length > 0) {
+    for (const old of existing) {
+      const newSec = sections.find((n) => n.id === old.sectionId)
+      if (newSec) {
+        const newHash = await sha256(newSec.bodyText)
+        if (newHash && newHash !== old.bodyHash) {
+          await setDocLastChanged(docId, Date.now())
+          const oldSentences = new Set((old.bodyText.match(/[^.!?]+[.!?]+/g) || []).map((x) => x.trim().toLowerCase()))
+          const added = (newSec.bodyText.match(/[^.!?]+[.!?]+/g) || []).map((x) => x.trim()).filter((x) => !oldSentences.has(x.toLowerCase()))
+          const diffSummary = added.length > 0 ? `New content added: ${added.slice(0, 2).join(' ').slice(0, 300)}` : 'This section was modified.'
+          await saveChange({ docId, sectionId: old.sectionId, headingText: old.headingText, changedAt: Date.now(), oldText: old.bodyText, newText: newSec.bodyText, diffSummary, domain: hostname })
+          break
+        }
       }
     }
   }
+
+  // Route analysis through offscreen document (hosts Transformers.js)
+  await ensureOffscreenDocument()
+
+  const results = await new Promise<SectionResult[]>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingAnalysis.delete(docId)
+      reject(new Error('Analysis timed out'))
+    }, ANALYSIS_TIMEOUT_MS)
+
+    pendingAnalysis.set(docId, { resolve, timer })
+    console.log(`[BG] Sending ${sections.length} sections to offscreen for analysis`)
+    chrome.runtime.sendMessage({ type: 'SUMMARIZE_SECTIONS', docId, sections } as ExtensionMessage)
+  })
+
+  // Save results
+  await saveResults(docId, results)
+  await updateBadgeForDomain(hostname)
+
+  // Return full data so popup can display immediately
+  const savedSections = await getSections(docId)
+  const changes = await getChangesForDoc(docId)
+  return { ok: true, docId, sections: savedSections, changes }
 }
 
 async function handleGetAnalysis(tabUrl: string): Promise<ExtensionMessage> {
   let domain: string
-  try {
-    domain = new URL(tabUrl).hostname
-  } catch {
+  try { domain = new URL(tabUrl).hostname } catch {
     return { type: 'ANALYSIS_RESULT', docId: null, sections: [], changes: [] } as ExtensionMessage
   }
   const docId = `${domain}::${tabUrl}`
@@ -230,7 +277,17 @@ async function handleGetAnalysis(tabUrl: string): Promise<ExtensionMessage> {
   }
   const sections = await getSections(docId)
   const changes = await getChangesForDoc(docId)
-  return { type: 'ANALYSIS_RESULT', docId, sections, changes } as ExtensionMessage
+  return { type: 'ANALYSIS_RESULT', docId, sections, changes }
+}
+
+async function saveResults(docId: string, results: SectionResult[]) {
+  const records: SectionRecord[] = results.map((r) => ({
+    sectionKey: `${docId}::${r.sectionId}`,
+    docId, sectionId: r.sectionId, headingText: r.headingText,
+    bodyText: r.bodyText, bodyHash: r.bodyHash, summary: r.summary,
+    riskFlags: r.riskFlags, modelUsed: r.modelUsed, savedAt: Date.now(),
+  }))
+  await saveSections(records)
 }
 
 async function updateBadgeForDomain(domain: string) {
