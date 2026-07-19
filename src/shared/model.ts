@@ -1,166 +1,139 @@
 import type { ExtractedSection, RiskFlag } from './messages'
-import { RISK_FLAG_PROMPT } from './riskFlags'
+import { RISK_CATEGORIES } from './riskFlags'
 
-type SummarizerBackend = 'builtin' | 'transformers' | 'none'
-
-let backend: SummarizerBackend = 'none'
 let transformersPipeline: any = null
-let builtinSummarizer: any = null
+let modelReady = false
+let modelLoading = false
 
-const MAX_CHUNK_CHARS = 3000
+const MODEL_CHUNK_CHARS = 800
 
-export async function initModel(): Promise<SummarizerBackend> {
-  if (backend !== 'none') return backend
-
-  try {
-    if (typeof (window as any).ai !== 'undefined' && (window as any).ai?.summarizer) {
-      builtinSummarizer = await (window as any).ai.summarizer.create()
-      backend = 'builtin'
-      console.log('[Model] Using Chrome built-in Summarizer API')
-      return backend
-    }
-  } catch {
-    console.log('[Model] Built-in API not available, trying Transformers.js')
-  }
-
-  try {
-    const { pipeline } = await import('@huggingface/transformers')
-    transformersPipeline = await pipeline('summarization', 'Xenova/distilbart-cnn-6-6')
-    backend = 'transformers'
-    console.log('[Model] Using Transformers.js with distilbart-cnn-6-6')
-    return backend
-  } catch (e) {
-    console.warn('[Model] Transformers.js failed to load:', e)
-    backend = 'none'
-    return backend
-  }
+export function isModelReady(): boolean {
+  return modelReady
 }
 
-function chunkText(text: string, maxChars: number): string[] {
-  if (text.length <= maxChars) return [text]
-  const chunks: string[] = []
-  const sentences = text.split(/(?<=[.!?])\s+/)
-  let current = ''
-  for (const sentence of sentences) {
-    if (current.length + sentence.length > maxChars && current.length > 0) {
-      chunks.push(current)
-      current = sentence
-    } else {
-      current = current ? current + ' ' + sentence : sentence
-    }
-  }
-  if (current) chunks.push(current)
-  return chunks
+export function isModelLoading(): boolean {
+  return modelLoading
+}
+
+export function loadModelInBackground() {
+  if (modelLoading || modelReady) return
+  modelLoading = true
+  console.log('[Model] Starting background model load...')
+  import('@huggingface/transformers')
+    .then(({ pipeline }) =>
+      pipeline('summarization', 'Xenova/distilbart-cnn-6-6', {
+        progress_callback: (p: any) => {
+          if (p.status === 'progress') console.log(`[Model] Download: ${Math.round(p.progress || 0)}%`)
+          if (p.status === 'done') console.log('[Model] Model download complete')
+        },
+      })
+    )
+    .then((pipe) => {
+      transformersPipeline = pipe
+      modelReady = true
+      console.log('[Model] Transformers.js model loaded and ready')
+    })
+    .catch((e) => {
+      console.error('[Model] Background model load failed:', e)
+    })
+    .finally(() => {
+      modelLoading = false
+    })
 }
 
 export async function summarizeSection(section: ExtractedSection): Promise<string> {
-  const chunks = chunkText(section.bodyText, MAX_CHUNK_CHARS)
-  if (chunks.length === 1) {
-    const prompt = `Summarize the following section of a legal/policy document in 2-3 plain-English sentences.
-Focus on what it means for the user practically. Do not use legal jargon.
-
-Section heading: "${section.headingText}"
-Section text:
-"""
-${section.bodyText}
-"""`
-    return runModel(prompt)
+  if (modelReady && transformersPipeline) {
+    try {
+      const input = section.bodyText.slice(0, MODEL_CHUNK_CHARS)
+      const result = await transformersPipeline(input, {
+        max_length: 150,
+        min_length: 20,
+        do_sample: false,
+      })
+      if (Array.isArray(result) && result[0]?.summary_text) {
+        return result[0].summary_text
+      }
+    } catch (e) {
+      console.warn('[Model] Transformers inference failed, using extractive:', e)
+    }
   }
 
-  const summaries: string[] = []
-  for (let i = 0; i < chunks.length; i++) {
-    const prompt = `Summarize the following chunk of a legal/policy document section in 1-2 plain-English sentences.
-Section heading: "${section.headingText}" (part ${i + 1}/${chunks.length})
-Section text:
-"""
-${chunks[i]}
-"""`
-    const result = await runModel(prompt)
-    summaries.push(result)
-  }
-  const combined = summaries.join(' ')
-  const finalPrompt = `Combine these partial summaries into one concise 2-3 sentence summary:
-${combined}`
-  return runModel(finalPrompt)
+  return extractiveSummarize(section.bodyText, section.headingText)
 }
 
 export async function classifyRisk(bodyText: string): Promise<RiskFlag[]> {
-  const truncated = bodyText.length > MAX_CHUNK_CHARS ? bodyText.slice(0, MAX_CHUNK_CHARS) : bodyText
-  const prompt = RISK_FLAG_PROMPT.replace('{bodyText}', truncated)
-  const result = await runModel(prompt)
-  return extractRiskFlags(result)
+  return keywordRiskFlags(bodyText)
 }
 
 export async function explainDiff(oldText: string, newText: string): Promise<string> {
-  const oldTruncated = oldText.length > MAX_CHUNK_CHARS ? oldText.slice(0, MAX_CHUNK_CHARS) : oldText
-  const newTruncated = newText.length > MAX_CHUNK_CHARS ? newText.slice(0, MAX_CHUNK_CHARS) : newText
-  const prompt = `A company changed this section of their policy. Explain in 1-2 plain-English sentences what
-changed and why it matters to the user. Be specific about what is newly allowed, removed, or restricted.
-Do not restate the full text.
+  if (modelReady && transformersPipeline) {
+    try {
+      const prompt = `What changed and why it matters:\nOld: ${oldText.slice(0, MODEL_CHUNK_CHARS)}\nNew: ${newText.slice(0, MODEL_CHUNK_CHARS)}`
+      const result = await transformersPipeline(prompt, { max_length: 100, min_length: 10, do_sample: false })
+      if (Array.isArray(result) && result[0]?.summary_text) return result[0].summary_text
+    } catch {}
+  }
 
-Previous version:
-"""
-${oldTruncated}
-"""
-
-New version:
-"""
-${newTruncated}
-"""`
-
-  return runModel(prompt)
+  return extractiveDiffSummary(oldText, newText)
 }
 
-async function runModel(prompt: string): Promise<string> {
-  if (backend === 'builtin' && builtinSummarizer) {
-    return runBuiltin(prompt)
-  }
-  if (backend === 'transformers' && transformersPipeline) {
-    return runTransformers(prompt)
-  }
-  return '[Model not available]'
+function extractiveSummarize(text: string, heading: string): string {
+  const sentences = text.match(/[^.!?]+[.!?]+/g) || []
+  if (sentences.length === 0) return text.slice(0, 300) || 'No content extracted.'
+  const picked = sentences.slice(0, 3).map((s) => s.trim())
+  return picked.join(' ')
 }
 
-async function runBuiltin(prompt: string): Promise<string> {
-  try {
-    const result = await builtinSummarizer.summarize(prompt)
-    return typeof result === 'string' ? result : result?.text || '[No result]'
-  } catch {
-    return '[Built-in summarization failed]'
+function extractiveDiffSummary(oldText: string, newText: string): string {
+  const oldSentences = new Set(
+    (oldText.match(/[^.!?]+[.!?]+/g) || []).map((s) => s.trim().toLowerCase())
+  )
+  const newSentences = (newText.match(/[^.!?]+[.!?]+/g) || []).map((s) => s.trim())
+  const added = newSentences.filter((s) => !oldSentences.has(s.toLowerCase()))
+  if (added.length > 0) {
+    return `New content added: ${added.slice(0, 2).join(' ').slice(0, 300)}`
   }
+  return 'This section was modified.'
 }
 
-async function runTransformers(prompt: string): Promise<string> {
-  try {
-    const result = await transformersPipeline(prompt, {
-      max_length: 150,
-      min_length: 30,
-      do_sample: false,
-    })
-    if (Array.isArray(result) && result[0]?.summary_text) {
-      return result[0].summary_text
+function keywordRiskFlags(bodyText: string): RiskFlag[] {
+  const lower = bodyText.toLowerCase()
+  const flags: RiskFlag[] = []
+
+  const checks: [RiskFlag['category'], string[], string][] = [
+    ['arbitration', ['arbitration', 'mandatory arbitration', 'binding arbitration', 'class action waiver'], 'Requires binding arbitration — you waive your right to sue in court or join a class action'],
+    ['data-sharing', ['share your data', 'third-party', 'third parties', 'data sharing', 'sell your data', 'advertising partners'], 'Your data may be shared with or sold to third parties for advertising or other purposes'],
+    ['auto-renewal', ['auto-renew', 'automatically renew', 'subscription renew'], 'Subscriptions renew automatically — you may be charged unless you cancel before the renewal date'],
+    ['unilateral-changes', ['we reserve the right to modify', 'we may change', 'at our sole discretion', 'without notice'], 'The company can change these terms at any time without notifying you'],
+    ['liability-waiver', ['not liable', 'no liability', 'as-is', 'without warranty', 'limitation of liability'], 'The company disclaims liability — you cannot hold them responsible for damages or losses'],
+    ['data-retention', ['retain', 'retention', 'store your data', 'data stored', 'keep your data'], 'Your data is stored and retained — the policy may not specify when it is deleted'],
+  ]
+
+  const sentences = bodyText.match(/[^.!?]+[.!?]+/g) || []
+
+  for (const [category, keywords, reason] of checks) {
+    for (const kw of keywords) {
+      const idx = lower.indexOf(kw)
+      if (idx !== -1) {
+        let snippet = ''
+        for (const sentence of sentences) {
+          if (sentence.toLowerCase().includes(kw)) {
+            snippet = sentence.trim()
+            break
+          }
+        }
+        if (!snippet) {
+          const start = Math.max(0, idx - 50)
+          const end = Math.min(bodyText.length, idx + kw.length + 50)
+          snippet = bodyText.slice(start, end).trim()
+          if (start > 0) snippet = '...' + snippet
+          if (end < bodyText.length) snippet = snippet + '...'
+        }
+        flags.push({ category, reason, snippet })
+        break
+      }
     }
-    if (typeof result === 'string') return result
-    return '[Could not summarize]'
-  } catch {
-    return '[Transformers summarization failed]'
   }
-}
 
-function extractRiskFlags(raw: string): RiskFlag[] {
-  try {
-    const jsonStart = raw.indexOf('[')
-    const jsonEnd = raw.lastIndexOf(']')
-    if (jsonStart === -1 || jsonEnd === -1) return []
-    const json = raw.slice(jsonStart, jsonEnd + 1)
-    const parsed = JSON.parse(json)
-    if (Array.isArray(parsed)) {
-      return parsed.filter(
-        (f: any) => f?.category && f?.reason
-      ) as RiskFlag[]
-    }
-    return []
-  } catch {
-    return []
-  }
+  return flags
 }

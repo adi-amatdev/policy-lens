@@ -2,15 +2,17 @@ import type { ExtractedSection, DocType } from './messages'
 import { headingSimilarity } from './diffing'
 
 const POLICY_URL_PATTERNS = [
-  /\/terms(\/|$)/i,
-  /\/tos(\/|$)/i,
-  /\/privacy(\/|$)/i,
-  /\/cookie(\/|$)/i,
-  /\/legal(\/|$)/i,
-  /\/dpa(\/|$)/i,
-  /\/gdpr(\/|$)/i,
-  /\/data-processing(\/|$)/i,
+  /\/terms(\/|-|_|\b)/i,
+  /\/tos(\/|-|_|\b)/i,
+  /\/privacy(\/|-|_|\b)/i,
+  /\/cookie(\/|-|_|\b)/i,
+  /\/legal(\/|-|_|\b)/i,
+  /\/dpa(\/|-|_|\b)/i,
+  /\/gdpr(\/|-|_|\b)/i,
+  /\/data-processing(\/|-|_|\b)/i,
   /\/acceptable.use/i,
+  /\/agreement/i,
+  /\/policy(\/|-|_|\b)/i,
 ]
 
 const POLICY_TITLE_KEYWORDS = [

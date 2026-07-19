@@ -30,4 +30,10 @@ export default defineManifest({
   permissions: ['storage', 'activeTab', 'scripting', 'offscreen'],
   host_permissions: ['<all_urls>'],
   options_page: 'src/dashboard/dashboard.html',
+  web_accessible_resources: [
+    {
+      resources: ['src/popup/popup.html'],
+      matches: ['<all_urls>'],
+    },
+  ],
 })

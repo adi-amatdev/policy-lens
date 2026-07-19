@@ -9,6 +9,7 @@ export interface RiskFlag {
     | 'liability-waiver'
     | 'data-retention'
   reason: string
+  snippet: string
 }
 
 export interface ExtractedSection {
@@ -66,6 +67,9 @@ export type ExtensionMessage =
   | { type: 'DIFF_RESULT'; docId: string; sectionId: string; headingText: string; oldText: string; newText: string; diffSummary: string }
   | { type: 'GET_ANALYSIS_FOR_TAB'; tabUrl: string }
   | { type: 'ANALYSIS_RESULT'; docId: string | null; sections: SectionRecord[]; changes: ChangeRecord[] }
+  | { type: 'ANALYZE_PAGE'; tabId: number }
+  | { type: 'EXTRACT_AND_DETECT' }
+  | { type: 'ANALYSIS_COMPLETE' }
   | { type: 'GET_DASHBOARD_DATA' }
   | { type: 'DASHBOARD_DATA'; domains: DomainSummary[] }
   | { type: 'CRAWL_REQUEST'; domain: string; urls: string[] }

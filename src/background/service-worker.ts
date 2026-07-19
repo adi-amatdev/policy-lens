@@ -1,174 +1,222 @@
-import type { ExtensionMessage, ExtractedSection, SectionResult, SectionRecord } from '../shared/messages'
+import type { ExtensionMessage, ExtractedSection, SectionResult, SectionRecord, RiskFlag } from '../shared/messages'
 import { upsertDocument, saveSections, getSections, saveChange, getAllDomains, setDocLastChanged, getDoc, getChangesForDoc } from '../shared/storage'
 import { sha256 } from '../shared/hashing'
 
-let offscreenReady = false
-let offscreenReadyResolve: (() => void) | null = null
-const offscreenReadyPromise = new Promise<void>((resolve) => {
-  offscreenReadyResolve = resolve
-})
-
-async function ensureOffscreen(): Promise<void> {
-  if (offscreenReady) return
-  if (typeof chrome.offscreen !== 'undefined' && chrome.offscreen) {
-    try {
-      const existing = await chrome.offscreen.hasDocument?.()
-      if (!existing) {
-        await chrome.offscreen.createDocument({
-          url: 'offscreen.html',
-          reasons: ['WORKERS' as chrome.offscreen.Reason],
-          justification: 'Run local model inference for policy summarization',
-        })
-      }
-      await offscreenReadyPromise
-    } catch (e) {
-      console.warn('[Background] Offscreen doc error:', e)
-    }
-  }
-}
-
-chrome.runtime.onMessage.addListener((msg: ExtensionMessage, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((msg: ExtensionMessage, sender, sendResponse) => {
+  console.log('[BG] Received:', msg.type)
   switch (msg.type) {
-    case 'PAGE_DETECTED':
-      handlePageDetected(msg, _sender.tab?.id)
-      break
-    case 'SUMMARIZE_RESULT':
-      handleSummarizeResult(msg)
-      break
-    case 'DIFF_RESULT':
-      handleDiffResult(msg)
-      break
-    case 'OFFSCREEN_READY':
-      offscreenReady = true
-      if (offscreenReadyResolve) {
-        offscreenReadyResolve()
-        offscreenReadyResolve = null
-      }
-      break
+    case 'ANALYZE_PAGE':
+      handleAnalyzePage(msg.tabId).then(sendResponse).catch((e) => {
+        console.error('[BG] ANALYZE_PAGE failed:', e)
+        sendResponse({ ok: false, error: String(e) })
+      })
+      return true
     case 'GET_ANALYSIS_FOR_TAB':
-      getAnalysisForTab(msg.tabUrl).then(sendResponse)
+      handleGetAnalysis(msg.tabUrl).then(sendResponse)
       return true
     case 'GET_DASHBOARD_DATA':
-      getAllDomains().then((domains) => {
-        sendResponse({ type: 'DASHBOARD_DATA', domains } as ExtensionMessage)
-      })
+      getAllDomains().then((domains) => sendResponse({ type: 'DASHBOARD_DATA', domains }))
       return true
     case 'DELETE_ALL_DATA':
-      deleteAllData().then(() => {
-        sendResponse({ type: 'DATA_DELETED' } as ExtensionMessage)
-      })
+      deleteAllData().then(() => sendResponse({ type: 'DATA_DELETED' }))
       return true
     case 'DELETE_MODEL_CACHE':
-      deleteModelCache().then(() => {
-        sendResponse({ type: 'MODEL_CACHE_DELETED' } as ExtensionMessage)
-      })
+      deleteModelCache().then(() => sendResponse({ type: 'MODEL_CACHE_DELETED' }))
       return true
   }
 })
 
-async function handlePageDetected(msg: { url: string; domain: string; docType: string; sections: ExtractedSection[]; discoveredLinks: string[] }, tabId?: number) {
-  const docId = `${msg.domain}::${msg.url}`
+function extractPageContent() {
+  const url = window.location.href
+  const hostname = window.location.hostname
+  const title = document.title
 
-  await upsertDocument({
-    docId,
-    domain: msg.domain,
-    docUrl: msg.url,
-    docType: msg.docType,
-    discoveredVia: 'user-visit',
-  })
+  function extractSectionsFromDOM(): ExtractedSection[] {
+    const sections: ExtractedSection[] = []
+    let order = 0
+    const headingTags = ['h1', 'h2', 'h3', 'h4']
+    const mainContent = document.querySelector('main, article, [role="main"], .content, #content, .post, .entry-content') || document.body
+    let currentHeading = 'Introduction'
+    let currentBody: string[] = []
 
-  if (msg.sections.length > 0) {
-    const existing = await getSections(docId)
-    if (existing.length > 0) {
-      await processChanges(docId, msg.domain, existing, msg.sections, tabId)
+    function flushSection() {
+      if (currentBody.length > 0) {
+        const bodyText = currentBody.join('\n').trim()
+        if (bodyText.length > 20) {
+          const slug = currentHeading.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')
+          sections.push({ id: `${order}-${slug}`, headingText: currentHeading, bodyText, order })
+          order++
+        }
+      }
+      currentBody = []
     }
 
-    await ensureOffscreen()
-    chrome.runtime.sendMessage({
-      type: 'SUMMARIZE_SECTIONS',
-      docId,
-      sections: msg.sections,
-    } as ExtensionMessage)
+    function walk(node: Node) {
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        const el = node as HTMLElement
+        if (['SCRIPT', 'STYLE', 'NAV', 'FOOTER'].includes(el.tagName)) return
+        if (headingTags.includes(el.tagName.toLowerCase())) {
+          flushSection()
+          currentHeading = el.textContent?.trim() || 'Untitled'
+          return
+        }
+      }
+      if (node.nodeType === Node.TEXT_NODE) {
+        const text = node.textContent?.trim()
+        if (text) currentBody.push(text)
+      }
+      node.childNodes.forEach(walk)
+    }
 
-    updateBadge(tabId, '...')
+    walk(mainContent)
+    flushSection()
+    return sections
   }
 
-  if (msg.discoveredLinks.length > 0) {
-    scheduleCrawl(msg.domain, msg.discoveredLinks)
+  function detectDocType(): string {
+    const text = `${url} ${title}`.toLowerCase()
+    if (/(terms|conditions|tos)/i.test(text)) return 'terms'
+    if (/(privacy)/i.test(text)) return 'privacy'
+    if (/(cookie)/i.test(text)) return 'cookies'
+    if (/(dpa|data.processing)/i.test(text)) return 'dpa'
+    return 'other'
   }
+
+  const sections = extractSectionsFromDOM()
+  const docType = detectDocType()
+
+  return { url, hostname, title, sections, docType }
 }
 
-async function processChanges(docId: string, _domain: string, existing: SectionRecord[], newSections: ExtractedSection[], tabId?: number) {
+async function handleAnalyzePage(tabId: number): Promise<{ ok: boolean; sectionCount: number }> {
+  console.log(`[BG] ANALYZE_PAGE tab=${tabId}`)
+
+  const [{ result: extracted }] = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: extractPageContent,
+  })
+
+  if (!extracted || !extracted.sections || extracted.sections.length === 0) {
+    console.warn('[BG] No sections extracted from page')
+    return { ok: false, sectionCount: 0 }
+  }
+
+  const { url, hostname, sections, docType } = extracted
+  const docId = `${hostname}::${url}`
+  console.log(`[BG] Extracted ${sections.length} sections from ${hostname}`)
+
+  await upsertDocument({
+    docId, domain: hostname, docUrl: url, docType, discoveredVia: 'user-visit',
+  })
+
+  const existing = await getSections(docId)
+  if (existing.length > 0) {
+    await processChanges(docId, hostname, existing, sections)
+  }
+
+  const results = summarizeSectionsDirectly(sections)
+  await saveResults(docId, results)
+  await updateBadgeForDomain(hostname)
+
+  console.log(`[BG] ANALYZE_PAGE complete: ${results.length} sections saved`)
+  return { ok: true, sectionCount: results.length }
+}
+
+function summarizeSectionsDirectly(sections: ExtractedSection[]): SectionResult[] {
+  return sections.map((section) => {
+    const summary = extractiveSummarize(section.bodyText)
+    const riskFlags = keywordRiskFlags(section.bodyText)
+    return {
+      sectionId: section.id,
+      headingText: section.headingText,
+      bodyText: section.bodyText,
+      bodyHash: '',
+      summary,
+      riskFlags,
+    }
+  })
+}
+
+function extractiveSummarize(text: string): string {
+  const sentences = text.match(/[^.!?]+[.!?]+/g) || []
+  if (sentences.length === 0) return text.slice(0, 300) || 'No content extracted.'
+  return sentences.slice(0, 3).map((s) => s.trim()).join(' ')
+}
+
+function keywordRiskFlags(bodyText: string): RiskFlag[] {
+  const lower = bodyText.toLowerCase()
+  const flags: RiskFlag[] = []
+
+  const checks: [RiskFlag['category'], string[], string][] = [
+    ['arbitration', ['arbitration', 'mandatory arbitration', 'binding arbitration', 'class action waiver'], 'Requires binding arbitration — you waive your right to sue in court or join a class action'],
+    ['data-sharing', ['share your data', 'third-party', 'third parties', 'data sharing', 'sell your data', 'advertising partners'], 'Your data may be shared with or sold to third parties for advertising or other purposes'],
+    ['auto-renewal', ['auto-renew', 'automatically renew', 'subscription renew'], 'Subscriptions renew automatically — you may be charged unless you cancel before the renewal date'],
+    ['unilateral-changes', ['we reserve the right to modify', 'we may change', 'at our sole discretion', 'without notice'], 'The company can change these terms at any time without notifying you'],
+    ['liability-waiver', ['not liable', 'no liability', 'as-is', 'without warranty', 'limitation of liability'], 'The company disclaims liability — you cannot hold them responsible for damages or losses'],
+    ['data-retention', ['retain', 'retention', 'store your data', 'data stored', 'keep your data'], 'Your data is stored and retained — the policy may not specify when it is deleted'],
+  ]
+
+  const sentences = bodyText.match(/[^.!?]+[.!?]+/g) || []
+
+  for (const [category, keywords, reason] of checks) {
+    for (const kw of keywords) {
+      const idx = lower.indexOf(kw)
+      if (idx !== -1) {
+        let snippet = ''
+        for (const sentence of sentences) {
+          if (sentence.toLowerCase().includes(kw)) {
+            snippet = sentence.trim()
+            break
+          }
+        }
+        if (!snippet) {
+          const start = Math.max(0, idx - 50)
+          const end = Math.min(bodyText.length, idx + kw.length + 50)
+          snippet = bodyText.slice(start, end).trim()
+          if (start > 0) snippet = '...' + snippet
+          if (end < bodyText.length) snippet = snippet + '...'
+        }
+        flags.push({ category, reason, snippet })
+        break
+      }
+    }
+  }
+
+  return flags
+}
+
+async function saveResults(docId: string, results: SectionResult[]) {
+  const records: SectionRecord[] = results.map((r) => ({
+    sectionKey: `${docId}::${r.sectionId}`,
+    docId, sectionId: r.sectionId, headingText: r.headingText,
+    bodyText: r.bodyText, bodyHash: r.bodyHash, summary: r.summary,
+    riskFlags: r.riskFlags, savedAt: Date.now(),
+  }))
+  await saveSections(records)
+}
+
+async function processChanges(docId: string, domain: string, existing: SectionRecord[], newSections: ExtractedSection[], tabId?: number) {
   const newHashes = new Map<string, string>()
   for (const s of newSections) {
     newHashes.set(s.id, await sha256(s.bodyText))
   }
-
-  const changedSections: { oldText: string; newText: string; sectionId: string; headingText: string }[] = []
-
-  for (const oldRecord of existing) {
-    const newHash = newHashes.get(oldRecord.sectionId)
-    if (newHash && newHash !== oldRecord.bodyHash) {
-      const newSection = newSections.find((s) => s.id === oldRecord.sectionId)
-      if (newSection) {
-        changedSections.push({
-          oldText: oldRecord.bodyText,
-          newText: newSection.bodyText,
-          sectionId: oldRecord.sectionId,
-          headingText: oldRecord.headingText,
-        })
+  for (const old of existing) {
+    const newHash = newHashes.get(old.sectionId)
+    if (newHash && newHash !== old.bodyHash) {
+      const s = newSections.find((n) => n.id === old.sectionId)
+      if (s) {
+        await setDocLastChanged(docId, Date.now())
+        const oldSentences = new Set((old.bodyText.match(/[^.!?]+[.!?]+/g) || []).map((x) => x.trim().toLowerCase()))
+        const added = (s.bodyText.match(/[^.!?]+[.!?]+/g) || []).map((x) => x.trim()).filter((x) => !oldSentences.has(x.toLowerCase()))
+        const diffSummary = added.length > 0 ? `New content added: ${added.slice(0, 2).join(' ').slice(0, 300)}` : 'This section was modified.'
+        await saveChange({ docId, sectionId: old.sectionId, headingText: old.headingText, changedAt: Date.now(), oldText: old.bodyText, newText: s.bodyText, diffSummary, domain })
+        break
       }
     }
   }
-
-  if (changedSections.length > 0) {
-    await setDocLastChanged(docId, Date.now())
-    for (const cs of changedSections) {
-      await ensureOffscreen()
-      chrome.runtime.sendMessage({
-        type: 'EXPLAIN_DIFF',
-        docId,
-        sectionId: cs.sectionId,
-        oldText: cs.oldText,
-        newText: cs.newText,
-        headingText: cs.headingText,
-      } as ExtensionMessage)
-    }
-    updateBadge(tabId, '!')
-  }
 }
 
-async function handleSummarizeResult(msg: { docId: string; results: SectionResult[] }) {
-  const sectionRecords: SectionRecord[] = msg.results.map((r) => ({
-    sectionKey: `${msg.docId}::${r.sectionId}`,
-    docId: msg.docId,
-    sectionId: r.sectionId,
-    headingText: r.headingText,
-    bodyText: r.bodyText,
-    bodyHash: r.bodyHash,
-    summary: r.summary,
-    riskFlags: r.riskFlags,
-    savedAt: Date.now(),
-  }))
-  await saveSections(sectionRecords)
-  const domain = msg.docId.split('::')[0]
-  await updateBadgeForDomain(domain)
-}
-
-async function handleDiffResult(msg: { docId: string; sectionId: string; headingText: string; oldText: string; newText: string; diffSummary: string }) {
-  await saveChange({
-    docId: msg.docId,
-    sectionId: msg.sectionId,
-    headingText: msg.headingText,
-    changedAt: Date.now(),
-    oldText: msg.oldText,
-    newText: msg.newText,
-    diffSummary: msg.diffSummary,
-    domain: msg.docId.split('::')[0],
-  })
-}
-
-async function getAnalysisForTab(tabUrl: string): Promise<ExtensionMessage> {
+async function handleGetAnalysis(tabUrl: string): Promise<ExtensionMessage> {
   let domain: string
   try {
     domain = new URL(tabUrl).hostname
@@ -185,76 +233,15 @@ async function getAnalysisForTab(tabUrl: string): Promise<ExtensionMessage> {
   return { type: 'ANALYSIS_RESULT', docId, sections, changes } as ExtensionMessage
 }
 
-const CRAWL_CAP = 5
-
-async function scheduleCrawl(domain: string, urls: string[]) {
-  const capped = urls.slice(0, CRAWL_CAP)
-  for (const url of capped) {
-    const docId = `${domain}::${url}`
-    const existing = await getDoc(docId)
-    if (existing) continue
-    try {
-      const response = await fetch(url)
-      const html = await response.text()
-      const plainText = stripHtml(html)
-      const sections: ExtractedSection[] = [
-        { id: 'full-doc', headingText: 'Full Document', bodyText: plainText, order: 0 },
-      ]
-      await upsertDocument({
-        docId,
-        domain,
-        docUrl: url,
-        docType: 'other',
-        discoveredVia: 'crawler',
-      })
-      if (sections.length > 0) {
-        await ensureOffscreen()
-        chrome.runtime.sendMessage({
-          type: 'SUMMARIZE_SECTIONS',
-          docId,
-          sections,
-        } as ExtensionMessage)
-      }
-    } catch (e) {
-      console.warn(`[Background] Failed to crawl ${url}:`, e)
-    }
-  }
-}
-
-function stripHtml(html: string): string {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-function updateBadge(tabId: number | undefined, text: string) {
-  if (tabId !== undefined) {
-    chrome.action.setBadgeText({ tabId, text })
-    chrome.action.setBadgeBackgroundColor({ tabId, color: '#6366f1' })
-  }
-}
-
 async function updateBadgeForDomain(domain: string) {
   const tabs = await chrome.tabs.query({})
   for (const tab of tabs) {
     if (tab.url && tab.id) {
       try {
-        const tabDomain = new URL(tab.url).hostname
-        if (tabDomain === domain) {
-          const docId = `${domain}::${tab.url}`
-          const sections = await getSections(docId)
+        if (new URL(tab.url).hostname === domain) {
+          const sections = await getSections(`${domain}::${tab.url}`)
           const riskCount = sections.reduce((sum, s) => sum + s.riskFlags.length, 0)
-          const text = riskCount > 0 ? String(riskCount) : '✓'
-          chrome.action.setBadgeText({ tabId: tab.id, text })
+          chrome.action.setBadgeText({ tabId: tab.id, text: riskCount > 0 ? String(riskCount) : '✓' })
           chrome.action.setBadgeBackgroundColor({ tabId: tab.id, color: riskCount > 0 ? '#ef4444' : '#22c55e' })
         }
       } catch {}
@@ -262,21 +249,14 @@ async function updateBadgeForDomain(domain: string) {
   }
 }
 
-async function deleteAllData(): Promise<void> {
+async function deleteAllData() {
   const dbs = await indexedDB.databases()
-  for (const dbInfo of dbs) {
-    if (dbInfo.name === 'policylens') {
-      indexedDB.deleteDatabase(dbInfo.name!)
-    }
+  for (const db of dbs) {
+    if (db.name === 'policylens') indexedDB.deleteDatabase(db.name!)
   }
 }
 
-async function deleteModelCache(): Promise<void> {
-  const cacheNames = await caches.keys()
-  for (const name of cacheNames) {
-    await caches.delete(name)
-  }
-  if (typeof chrome !== 'undefined' && chrome.storage?.local) {
-    await chrome.storage.local.clear()
-  }
+async function deleteModelCache() {
+  for (const name of await caches.keys()) await caches.delete(name)
+  await chrome.storage.local.clear()
 }

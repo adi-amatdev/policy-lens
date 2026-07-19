@@ -182,6 +182,28 @@ export async function getDoc(docId: string): Promise<PolicyLensDB['documents']['
   return database.get('documents', docId)
 }
 
+export interface DocRecord {
+  docId: string
+  domain: string
+  docUrl: string
+  docType: string
+  discoveredVia: 'user-visit' | 'crawler'
+  firstSeenAt: number
+  lastCheckedAt: number
+  lastChangedAt: number | null
+}
+
+export async function getDocsByDomain(domain: string): Promise<DocRecord[]> {
+  const database = await getDB()
+  const all = await database.getAll('documents')
+  return all.filter((d) => d.domain === domain)
+}
+
+export async function getAllDocs(): Promise<DocRecord[]> {
+  const database = await getDB()
+  return database.getAll('documents')
+}
+
 export async function clearAllData(): Promise<void> {
   const database = await getDB()
   const tx = database.transaction(['documents', 'sections', 'changes'], 'readwrite')
