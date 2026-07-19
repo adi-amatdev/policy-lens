@@ -1,12 +1,12 @@
 # PolicyLens
 
-**Chrome extension that summarizes Terms & Conditions and privacy policies entirely on-device, so you know what you're agreeing to before you click "Accept."**
+**If you care about your privacy, do not accept the terms that can quietly cost you control. PolicyLens reads policies on your device, flags clauses affecting your data and money, and shows what changed before it becomes your problem.**
 
 PolicyLens detects policy pages in your browser, extracts and summarizes each section into plain English using local ML models, flags risky clauses (forced arbitration, unilateral data sharing, liability waivers), and tracks changes over time so you're never blindsided by an update to a policy you already accepted.
 
 ## Features
 
-- **Local-first AI:** Summaries run on-device via Chrome's built-in Summarizer API or Transformers.js (Xenova/distilbart-cnn-6-6). No data leaves your browser.
+- **Local-first AI:** Summaries run on-device via Chrome's built-in Summarizer API or Transformers.js (Xenova/distilbart-cnn-6-6). No data leaves your browser. Built primarily for Chrome, which provides the native on-device Summarizer API; other browsers fall back to Transformers.js.
 - **Change detection:** Stores a snapshot of every policy you visit. When a policy is updated, PolicyLens diffs the old and new versions and highlights exactly what changed.
 - **Risk flags:** Automatically flags clauses for data sharing, forced arbitration, auto-renewal, unilateral changes, liability waivers, and excessive data retention.
 - **Dashboard:** A dedicated tab (`chrome://extensions` → PolicyLens options) showing every tracked policy, its risk profile, and a history of changes.

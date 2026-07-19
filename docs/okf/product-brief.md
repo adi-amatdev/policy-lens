@@ -1,6 +1,6 @@
 ---
 type: Product Brief
-title: PolicyLens — Local-First T&C / Privacy Policy Summarizer
+title: PolicyLens: Local-First T&C / Privacy Policy Summarizer
 description: A Chrome MV3 extension that detects, summarizes, and tracks changes to legal/policy pages entirely on-device.
 tags: [chrome-extension, privacy, local-first, hackathon, mvp]
 timestamp: 2026-07-19T00:00:00Z
