@@ -8,9 +8,9 @@ type PageState = 'loading' | 'no-data' | 'analyzing' | 'results'
 const FIRST_RUN_ACK_KEY = 'termsNoConditions.firstRunAcknowledged'
 
 const ANALYZING_STEPS = [
-  'Extracting page content...',
-  'Running on-device ML analysis...',
-  'Saving results...',
+  'Extracting page content',
+  'Loading AI model',
+  'Analyzing with AI',
 ]
 
 const DOT_COLORS: Record<string, string> = {
@@ -49,6 +49,14 @@ export default function Popup() {
   const [analyzing, setAnalyzing] = useState(false)
   const [analyzeStep, setAnalyzeStep] = useState(0)
   const [analyzeError, setAnalyzeError] = useState('')
+  const [elapsed, setElapsed] = useState(0)
+
+  useEffect(() => {
+    if (!analyzing) { setElapsed(0); return }
+    const start = Date.now()
+    const id = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 250)
+    return () => clearInterval(id)
+  }, [analyzing])
 
   useEffect(() => {
     chrome.storage.local.get(FIRST_RUN_ACK_KEY).then((stored) => {
@@ -194,21 +202,40 @@ export default function Popup() {
         )}
 
         {pageState === 'analyzing' && (
-          <div className="flex flex-col items-center justify-center py-10">
-            <div className="relative mb-4">
-              <svg className="animate-spin h-8 w-8 text-indigo-500" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
-              <div className="absolute inset-0 flex items-center justify-center">
-                <span className="text-[10px] font-bold text-indigo-600">{analyzeStep + 1}/{ANALYZING_STEPS.length}</span>
+          <div className="flex flex-col items-center py-8 px-6">
+            <div className="w-full max-w-[300px] mb-5">
+              <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-indigo-500 to-violet-500 rounded-full transition-all duration-500 ease-out"
+                  style={{ width: `${Math.min(((analyzeStep + 1) / ANALYZING_STEPS.length) * 100, 100)}%` }}
+                />
               </div>
             </div>
-            <p className="text-sm text-gray-700 font-medium mb-1">{ANALYZING_STEPS[analyzeStep]}</p>
-            <div className="flex gap-1.5 mt-2">
-              {ANALYZING_STEPS.map((_, i) => (
-                <span key={i} className={`w-2 h-2 rounded-full transition-colors duration-300 ${i <= analyzeStep ? 'bg-indigo-500' : 'bg-gray-200'}`} />
+
+            <div className="w-full space-y-2 mb-4">
+              {ANALYZING_STEPS.map((step, i) => (
+                <div key={i} className="flex items-center gap-2.5">
+                  {i < analyzeStep ? (
+                    <svg className="w-4 h-4 text-emerald-500 shrink-0" fill="none" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                    </svg>
+                  ) : i === analyzeStep ? (
+                    <div className="w-4 h-4 shrink-0 flex items-center justify-center">
+                      <div className="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-pulse" />
+                    </div>
+                  ) : (
+                    <div className="w-4 h-4 shrink-0" />
+                  )}
+                  <span className={`text-xs ${i === analyzeStep ? 'text-gray-800 font-medium' : i < analyzeStep ? 'text-gray-400' : 'text-gray-300'}`}>
+                    {step}
+                  </span>
+                </div>
               ))}
+            </div>
+
+            <div className="text-[10px] text-gray-400 font-mono">
+              {elapsed > 0 && <span>{elapsed}s</span>}
+              {elapsed > 8 && <span className="ml-1.5 text-indigo-500">First run downloads AI model</span>}
             </div>
           </div>
         )}

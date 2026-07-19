@@ -1,7 +1,7 @@
 import type { ExtractedSection, RiskFlag, SectionResult } from './messages'
 
-const SUMMARY_MAX_SENTENCES = 4
-const SUMMARY_MAX_CHARS = 600
+const SUMMARY_MAX_SENTENCES = 5
+const SUMMARY_MAX_CHARS = 700
 const MAX_MODEL_SENTENCES = 24
 const MAX_SENTENCE_CHARS = 480
 const EMBEDDING_MODEL_ID = 'Xenova/all-MiniLM-L6-v2'
@@ -126,7 +126,7 @@ function trimForModel(text: string): string {
 export function extractiveSummarize(text: string, _heading?: string): string {
   const sentences = splitSentences(text)
   if (sentences.length === 0) return text.slice(0, SUMMARY_MAX_CHARS) || 'No content extracted.'
-  if (sentences.length <= SUMMARY_MAX_SENTENCES) return sentences.join(' ')
+  if (sentences.length <= 2) return sentences.map(compressSentence).join(' ')
 
   const allWords = tokenize(text)
   const wordFreq = new Map<string, number>()
@@ -144,8 +144,14 @@ export function extractiveSummarize(text: string, _heading?: string): string {
   const top = scored.slice(0, SUMMARY_MAX_SENTENCES)
   top.sort((a, b) => a.index - b.index)
 
-  let result = top.map((t) => t.sentence).join(' ')
-  if (result.length > SUMMARY_MAX_CHARS) result = result.slice(0, SUMMARY_MAX_CHARS).trim() + '...'
+  const parts = top.map((t) => {
+    let compressed = compressSentence(t.sentence)
+    if (compressed.length > 180) compressed = compressed.slice(0, 177).trim() + '...'
+    return compressed
+  })
+
+  let result = parts.join(' ')
+  if (result.length > SUMMARY_MAX_CHARS) result = result.slice(0, SUMMARY_MAX_CHARS - 3).trim() + '...'
   return result
 }
 
@@ -293,39 +299,88 @@ function mergeRiskFlags(primary: RiskFlag[], fallback: RiskFlag[]): RiskFlag[] {
   return Array.from(byCategory.values())
 }
 
-function semanticSummary(sentences: string[], embeddings: number[][], riskLabelEmbeddings: number[][] | null): string {
-  if (sentences.length === 0) return 'No content extracted.'
-  if (sentences.length <= SUMMARY_MAX_SENTENCES) return sentences.join(' ')
+function cosineSim(a: number[], b: number[]): number {
+  const d = dot(a, b)
+  let normA = 0, normB = 0
+  for (let i = 0; i < Math.min(a.length, b.length); i++) { normA += a[i] * a[i]; normB += b[i] * b[i] }
+  const denom = Math.sqrt(normA) * Math.sqrt(normB)
+  return denom === 0 ? 0 : d / denom
+}
+
+function compressSentence(s: string): string {
+  let result = s
+  const redundantPatterns = [
+    /\b(the company|we|our company|the service provider)\s+(may|might|will|shall|can|reserves? the right to)\s*/gi,
+    /\byou (agree|acknowledge|consent|understand|agree that)\s+/gi,
+    /\bin (the )?event (that )?/gi,
+    /\bfor (the )?(purpose|avoidance) of\b/gi,
+    /\bwith respect to\b/gi,
+    /\bin accordance with\b/gi,
+    /\bpursuant to\b/gi,
+    /\bnotwithstanding\b/gi,
+  ]
+  for (const pattern of redundantPatterns) {
+    result = result.replace(pattern, '')
+  }
+  result = result.replace(/\s+/g, ' ').trim()
+  if (result.length > 0) result = result.charAt(0).toUpperCase() + result.slice(1)
+  return result
+}
+
+function mmrSelect(
+  embeddings: number[][],
+  sentences: string[],
+  count: number,
+  lambda = 0.6,
+): { sentence: string; index: number }[] {
+  const selected: { sentence: string; index: number; embedding: number[] }[] = []
+  const candidates = sentences.map((s, i) => ({ sentence: s, index: i, embedding: embeddings[i] }))
 
   const centroid = new Array(embeddings[0].length).fill(0)
-  for (const vector of embeddings) {
-    for (let i = 0; i < vector.length; i++) centroid[i] += vector[i]
-  }
+  for (const v of embeddings) { for (let i = 0; i < v.length; i++) centroid[i] += v[i] }
   for (let i = 0; i < centroid.length; i++) centroid[i] /= embeddings.length
 
-  const allText = sentences.join(' ')
-  const allWords = tokenize(allText)
-  const wordFreq = new Map<string, number>()
-  for (const w of allWords) wordFreq.set(w, (wordFreq.get(w) || 0) + 1)
+  for (let round = 0; round < Math.min(count, candidates.length); round++) {
+    let bestScore = -Infinity
+    let bestIdx = -1
 
-  const scored = sentences.map((sentence, index) => {
-    const legalRiskScore = riskLabelEmbeddings
-      ? Math.max(...riskLabelEmbeddings.map((labelVector) => dot(embeddings[index], labelVector)))
-      : 0
-    return {
-      sentence,
-      index,
-      score:
-        sentenceScore(sentence, sentences.length, index, wordFreq) +
-        dot(embeddings[index], centroid) * 3 +
-        legalRiskScore * 2,
+    for (let c = 0; c < candidates.length; c++) {
+      const cand = candidates[c]
+      if (selected.some((s) => s.index === cand.index)) continue
+
+      const relevance = cosineSim(cand.embedding, centroid)
+      let maxSimToSelected = 0
+      for (const s of selected) {
+        const sim = cosineSim(cand.embedding, s.embedding)
+        if (sim > maxSimToSelected) maxSimToSelected = sim
+      }
+      const mmrScore = lambda * relevance - (1 - lambda) * maxSimToSelected
+
+      if (mmrScore > bestScore) { bestScore = mmrScore; bestIdx = c }
     }
+
+    if (bestIdx === -1) break
+    selected.push(candidates[bestIdx])
+  }
+
+  return selected.sort((a, b) => a.index - b.index)
+}
+
+function semanticSummary(sentences: string[], embeddings: number[][], _riskLabelEmbeddings: number[][] | null): string {
+  if (sentences.length === 0) return 'No content extracted.'
+  if (sentences.length <= 2) return sentences.map(compressSentence).join(' ')
+
+  const selected = mmrSelect(embeddings, sentences, SUMMARY_MAX_SENTENCES)
+
+  const parts = selected.map(({ sentence }) => {
+    let compressed = compressSentence(sentence)
+    if (compressed.length > 180) compressed = compressed.slice(0, 177).trim() + '...'
+    return compressed
   })
 
-  scored.sort((a, b) => b.score - a.score)
-  const top = scored.slice(0, SUMMARY_MAX_SENTENCES).sort((a, b) => a.index - b.index)
-  let result = top.map((item) => item.sentence).join(' ')
-  if (result.length > SUMMARY_MAX_CHARS) result = result.slice(0, SUMMARY_MAX_CHARS).trim() + '...'
+  let result = parts.join(' ')
+  if (result.length > SUMMARY_MAX_CHARS) result = result.slice(0, SUMMARY_MAX_CHARS - 3).trim() + '...'
+
   return result
 }
 
