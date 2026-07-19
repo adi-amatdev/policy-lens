@@ -2,32 +2,27 @@
 
 **If you care about your privacy, do not accept the terms that can quietly cost you control. PolicyLens reads policies on your device, flags clauses affecting your data and money, and shows what changed before it becomes your problem.**
 
-PolicyLens detects policy pages in your browser, extracts and summarizes each section into plain English using local ML models, flags risky clauses (forced arbitration, unilateral data sharing, liability waivers), and tracks changes over time so you're never blindsided by an update to a policy you already accepted.
+PolicyLens detects policy pages in your browser, extracts and analyzes each section using a local ML model, flags risky clauses (forced arbitration, unilateral data sharing, liability waivers), and tracks changes over time so you're never blindsided by an update to a policy you already accepted.
 
 ## Features
 
-- **Local-first AI:** Summaries run on-device via Chrome's built-in Summarizer API or Transformers.js (Xenova/distilbart-cnn-6-6). No data leaves your browser. Built primarily for Chrome, which provides the native on-device Summarizer API; other Chromium-based browsers fall back to Transformers.js. A dedicated build is required for Firefox (see [Deployment](docs/okf/deployment.md)).
+- **Local-first AI:** All analysis runs on-device via Transformers.js (`Xenova/all-MiniLM-L6-v2`, 23MB quantized ONNX). Summaries are extractive with semantic ranking (MMR for diversity). No data leaves your browser.
 - **Change detection:** Stores a snapshot of every policy you visit. When a policy is updated, PolicyLens diffs the old and new versions and highlights exactly what changed.
-- **Risk flags:** Automatically flags clauses for data sharing, forced arbitration, auto-renewal, unilateral changes, liability waivers, and excessive data retention.
-- **Dashboard:** A dedicated tab (`chrome://extensions` → PolicyLens options) showing every tracked policy, its risk profile, and a history of changes.
+- **Risk flags:** Hybrid detection combining semantic embedding similarity against risk category definitions with deterministic keyword anchors. Flags data sharing, forced arbitration, auto-renewal, unilateral changes, liability waivers, and excessive data retention.
+- **Dashboard:** A dedicated tab (`chrome://extensions` → PolicyLens options) showing every tracked policy, its risk profile, and a history of changes. Includes a search chat for querying analyzed policies.
 - **Auto-detection:** Recognizes policy pages by URL patterns (`/terms`, `/privacy`, `/legal`, etc.) and page structure (heading density + policy-specific keywords).
+- **Model observability:** UI badge shows whether ML inference ran or fell back to keyword-only mode.
 
 ## Screenshots
 
 > _Screenshots coming soon._
-
-<!-- 
-![Popup showing a summarized Terms of Service](docs/screenshots/popup.png)
-![Dashboard with risk flags](docs/screenshots/dashboard.png)
-![Change detection diff view](docs/screenshots/diff.png)
--->
 
 ## Install from Source
 
 ### Prerequisites
 
 - [Node.js](https://nodejs.org/) >= 18
-- [pnpm](https://pnpm.io/), npm, or yarn
+- npm
 - Google Chrome >= 120
 
 ### Steps
@@ -64,37 +59,66 @@ This starts a Vite dev server and outputs an unpacked extension to `dist/` that 
 |---|---|
 | Extension | Chrome Manifest V3, `@crxjs/vite-plugin` |
 | UI | React 19, TypeScript, Tailwind CSS v4 |
-| On-device ML | Chrome Summarizer API (primary), Transformers.js + distilbart-cnn-6-6 (fallback) |
+| On-device ML | Transformers.js v4 + `Xenova/all-MiniLM-L6-v2` (ONNX q8, ~23MB) |
+| WASM runtime | ONNX Runtime Web (bundled locally, no CDN dependency) |
 | Diffing | `diff` (word-level diff for policy changes) |
 | Storage | Chrome `storage` API + IndexedDB (`idb`) |
 | Linting | Oxlint |
 | Build | Vite 8, TypeScript |
 
+## Architecture
+
+```
+Popup ──ANALYZE_PAGE──► Background Service Worker
+                           │
+                           ├─ extractPageContent() via chrome.scripting
+                           ├─ createOffscreenDocument()
+                           └─ SUMMARIZE_SECTIONS ──► Offscreen Document
+                                                        │
+                                                        ├─ Transformers.js loads Xenova/all-MiniLM-L6-v2
+                                                        ├─ Embeds sentences (semantic feature extraction)
+                                                        ├─ MMR sentence selection for summaries
+                                                        ├─ Semantic + keyword risk classification
+                                                        └─ SUMMARIZE_RESULT ──► Background
+                                                                                   │
+                                                                                   ├─ Save to IndexedDB
+                                                                                   ├─ Update badge
+                                                                                   └─ Return to Popup
+```
+
+- **Popup** never imports `model.ts` — all ML runs in the offscreen document
+- **Offscreen document** hosts Transformers.js WASM inference (safe from popup destruction)
+- **ONNX Runtime WASM** files are bundled locally in `public/ort/` — no CDN required
+- **CSP** requires `'wasm-unsafe-eval'` for WebAssembly compilation
+
 ## Project Structure
 
 ```
 src/
-  background/     Service worker: orchestrates tab visits and storage
-  content/        Content script: extracts policy text from the DOM
-  offscreen/      Offscreen document for model inference
-  popup/          Browser action popup: quick summary + risk flags
-  dashboard/      Options page: full policy history and change log
+  background/     Service worker: orchestrates extraction, offscreen lifecycle, storage
+  content/        Content script: detects policy pages, extracts sections from DOM
+  offscreen/      Offscreen document: hosts Transformers.js for ML inference
+  popup/          Browser action popup: triggers analysis, displays results
+  dashboard/      Options page: full policy history, change log, search chat
   shared/         Core logic: detection, diffing, hashing, risk flags, model, storage
+public/
+  ort/            ONNX Runtime WASM binaries (bundled locally, ~23MB)
 demo/             Fixture HTML files for testing change detection
 ```
 
 ## How It Works
 
 1. A content script runs on every page and checks if the URL/page content looks like a policy document.
-2. If detected, it extracts sections (by heading) and stores a hashed snapshot.
-3. On the next visit, it compares the new content against the stored snapshot using word-level diffing.
-4. Changed sections are summarized and presented as a diff with plain-English explanations.
-5. Risk flags are classified for each section using the local ML model.
+2. If detected, it notifies the background service worker.
+3. When the user clicks "Analyze This Page", the background extracts sections and sends them to the offscreen document.
+4. The offscreen document loads the ML model (first run downloads ~23MB, then cached) and embeds each section.
+5. **Summaries:** MMR (Maximum Marginal Relevance) selects diverse, representative sentences. Redundant filler phrases are compressed out.
+6. **Risk flags:** Each sentence is scored against category embeddings (semantic similarity) plus keyword anchors (deterministic catch-all). Scores above threshold produce flags.
+7. Changed sections are detected by comparing content hashes against stored snapshots, with word-level diffing.
 
-## Future Scope
+## First Run
 
-- **Broader browser support** - Port to Firefox and Safari by replacing the Chrome-specific offscreen document with a platform-agnostic model host (hidden extension page or Web Worker). The Transformers.js inference path already works cross-browser; the main work is providing it a compatible execution context on each platform.
-- **Mobile and edge devices** - Extend beyond desktop browsers into a standalone mobile app (e.g. via Capacitor or a native WebView wrapper) that intercepts in-app browser sessions and policy links. On-device models like distilled Gemma or Phi-3 can run on mobile GPUs, keeping the local-first guarantee intact on phones and tablets.
+On first analysis, the extension downloads the ONNX model weights from Hugging Face (~23MB). This takes 5-15 seconds depending on connection. After that, the model is cached in the browser's Cache API and loads near-instantly.
 
 ## License
 
