@@ -7,3 +7,4 @@
 - **Sync**: Updated manifest name from em-dash to colon in setup-and-scaffold and product-brief.
 - **Sync**: Updated index and README to note Chrome-primary targeting (Summarizer API) with Transformers.js fallback for other Chromium browsers.
 - **Sync**: README feature list reformatted (em-dash to colon), tagline updated.
+- **Clarification**: Docs now explicitly state Firefox requires a dedicated build (offscreen API missing, summarization silently fails without it).

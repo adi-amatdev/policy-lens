@@ -6,7 +6,7 @@ PolicyLens detects policy pages in your browser, extracts and summarizes each se
 
 ## Features
 
-- **Local-first AI:** Summaries run on-device via Chrome's built-in Summarizer API or Transformers.js (Xenova/distilbart-cnn-6-6). No data leaves your browser. Built primarily for Chrome, which provides the native on-device Summarizer API; other browsers fall back to Transformers.js.
+- **Local-first AI:** Summaries run on-device via Chrome's built-in Summarizer API or Transformers.js (Xenova/distilbart-cnn-6-6). No data leaves your browser. Built primarily for Chrome, which provides the native on-device Summarizer API; other Chromium-based browsers fall back to Transformers.js. A dedicated build is required for Firefox (see [Deployment](docs/okf/deployment.md)).
 - **Change detection:** Stores a snapshot of every policy you visit. When a policy is updated, PolicyLens diffs the old and new versions and highlights exactly what changed.
 - **Risk flags:** Automatically flags clauses for data sharing, forced arbitration, auto-renewal, unilateral changes, liability waivers, and excessive data retention.
 - **Dashboard:** A dedicated tab (`chrome://extensions` → PolicyLens options) showing every tracked policy, its risk profile, and a history of changes.
@@ -90,6 +90,11 @@ demo/             Fixture HTML files for testing change detection
 3. On the next visit, it compares the new content against the stored snapshot using word-level diffing.
 4. Changed sections are summarized and presented as a diff with plain-English explanations.
 5. Risk flags are classified for each section using the local ML model.
+
+## Future Scope
+
+- **Broader browser support** - Port to Firefox and Safari by replacing the Chrome-specific offscreen document with a platform-agnostic model host (hidden extension page or Web Worker). The Transformers.js inference path already works cross-browser; the main work is providing it a compatible execution context on each platform.
+- **Mobile and edge devices** - Extend beyond desktop browsers into a standalone mobile app (e.g. via Capacitor or a native WebView wrapper) that intercepts in-app browser sessions and policy links. On-device models like distilled Gemma or Phi-3 can run on mobile GPUs, keeping the local-first guarantee intact on phones and tablets.
 
 ## License
 

@@ -4,7 +4,7 @@ okf_version: "0.1"
 
 # PolicyLens Knowledge Bundle
 
-Local-first Chrome extension for summarizing Terms & Conditions and privacy policies on-device. Built primarily for Chrome, which provides the Summarizer API for on-device inference; a Transformers.js fallback covers other Chromium-based browsers.
+Local-first Chrome extension for summarizing Terms & Conditions and privacy policies on-device. Built primarily for Chrome, which provides the Summarizer API for on-device inference; a Transformers.js fallback covers other Chromium-based browsers. Firefox requires a dedicated build — the offscreen document API used for model hosting is Chrome-specific (see [Deployment](./deployment.md)).
 
 - [Product Brief](./product-brief.md) — Vision, MVP scope, and core user flows
 - [Architecture](./architecture.md) — Component design, tech stack, and data flow

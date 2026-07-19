@@ -87,7 +87,7 @@ model directly.
 | Bundler/dev server | Vite + `@crxjs/vite-plugin` | MV3-aware HMR, single config for all entry points |
 | UI | React + Tailwind | fast to build popup + dashboard with shared components |
 | Local LLM (primary) | Chrome built-in Summarizer / Prompt API (Gemini Nano) | zero download owned by you, on-device, already in Chrome |
-| Local LLM (fallback) | `@huggingface/transformers` (Transformers.js), e.g. `Xenova/distilbart-cnn-6-6` or a small instruct model | works in non-Chrome / when built-in API unavailable |
+| Local LLM (fallback) | `@huggingface/transformers` (Transformers.js), e.g. `Xenova/distilbart-cnn-6-6` or a small instruct model | works in Chromium-based browsers when built-in API unavailable; Firefox requires a dedicated build to replace `chrome.offscreen` with a tab/worker-based model host |
 | Storage | IndexedDB via `idb` | chrome.storage.local has small quota; IndexedDB handles full document text + section history |
 | Hashing | Web Crypto `crypto.subtle.digest('SHA-256', ...)` | native, no dependency |
 | Diffing | `diff` (jsdiff), `diffWordsWithSpace` at the section level | mature, small, good for prose diffing |
