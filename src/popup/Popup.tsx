@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
-import type { ExtensionMessage, SectionRecord, ChangeRecord, RiskFlag } from '../shared/messages'
+import type { ExtensionMessage, SectionRecord, ChangeRecord } from '../shared/messages'
 import { CATEGORY_LABELS, CATEGORY_COLORS } from '../shared/riskFlags'
+import { getWordDiff, type WordDiff } from '../shared/diffing'
 
 type Tab = 'summary' | 'risks' | 'changes'
 
@@ -11,6 +12,7 @@ export default function Popup() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [hasChanges, setHasChanges] = useState(false)
+  const [showSettings, setShowSettings] = useState(false)
 
   useEffect(() => {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -48,20 +50,27 @@ export default function Popup() {
     )
   }
 
-  if (error) {
+  if (error && !showSettings) {
     return (
       <div className="w-[380px] p-4">
         <Disclaimer />
         <p className="text-gray-500 text-sm mt-2">{error}</p>
+        <SettingsButton onClick={() => setShowSettings(true)} />
       </div>
     )
   }
 
   const allRiskFlags = sections.flatMap((s) => s.riskFlags)
+  const modelUnavailable = sections.length > 0 && sections.every((s) => s.summary.startsWith('['))
 
   return (
     <div className="w-[380px] p-3">
       <Disclaimer />
+      {modelUnavailable && (
+        <div className="mb-2 p-2 bg-yellow-50 border border-yellow-200 rounded text-xs text-yellow-700">
+          Model not available. Summaries are placeholders. Check that Chrome's built-in AI is enabled or try again later.
+        </div>
+      )}
       <div className="flex gap-1 mb-3 border-b pb-2">
         <TabButton
           label="Summary"
@@ -87,7 +96,7 @@ export default function Popup() {
       {activeTab === 'risks' && <RiskTab sections={sections} />}
       {activeTab === 'changes' && <ChangesTab changes={changes} />}
 
-      <div className="mt-3 pt-2 border-t text-center">
+      <div className="mt-3 pt-2 border-t flex items-center justify-between">
         <a
           href="#"
           onClick={(e) => {
@@ -98,6 +107,80 @@ export default function Popup() {
         >
           Open full dashboard →
         </a>
+        <SettingsButton onClick={() => setShowSettings(!showSettings)} />
+      </div>
+
+      {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
+    </div>
+  )
+}
+
+function SettingsButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="text-xs text-gray-400 hover:text-gray-600 px-2 py-1 rounded hover:bg-gray-100"
+      title="Settings"
+    >
+      ⚙
+    </button>
+  )
+}
+
+function SettingsPanel({ onClose }: { onClose: () => void }) {
+  const [deleting, setDeleting] = useState(false)
+  const [clearingCache, setClearingCache] = useState(false)
+  const [deleted, setDeleted] = useState(false)
+  const [cacheCleared, setCacheCleared] = useState(false)
+
+  function handleDeleteData() {
+    if (!confirm('Delete all stored policy data? This cannot be undone.')) return
+    setDeleting(true)
+    chrome.runtime.sendMessage({ type: 'DELETE_ALL_DATA' } as ExtensionMessage, () => {
+      setDeleting(false)
+      setDeleted(true)
+    })
+  }
+
+  function handleClearCache() {
+    setClearingCache(true)
+    chrome.runtime.sendMessage({ type: 'DELETE_MODEL_CACHE' } as ExtensionMessage, () => {
+      setClearingCache(false)
+      setCacheCleared(true)
+    })
+  }
+
+  return (
+    <div className="mt-2 p-3 bg-gray-50 rounded border text-xs space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="font-medium text-gray-700">Settings</span>
+        <button onClick={onClose} className="text-gray-400 hover:text-gray-600">✕</button>
+      </div>
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-gray-700">Delete all data</p>
+          <p className="text-gray-400 text-[10px]">Clears all stored policies, sections, and changes</p>
+        </div>
+        <button
+          onClick={handleDeleteData}
+          disabled={deleting || deleted}
+          className="text-red-600 hover:text-red-800 disabled:opacity-50 px-2 py-1 rounded border border-red-200 hover:bg-red-50"
+        >
+          {deleted ? '✓ Done' : deleting ? 'Deleting...' : 'Delete'}
+        </button>
+      </div>
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-gray-700">Clear model cache</p>
+          <p className="text-gray-400 text-[10px]">Removes downloaded AI model files (~300MB)</p>
+        </div>
+        <button
+          onClick={handleClearCache}
+          disabled={clearingCache || cacheCleared}
+          className="text-orange-600 hover:text-orange-800 disabled:opacity-50 px-2 py-1 rounded border border-orange-200 hover:bg-orange-50"
+        >
+          {cacheCleared ? '✓ Done' : clearingCache ? 'Clearing...' : 'Clear'}
+        </button>
       </div>
     </div>
   )
@@ -149,6 +232,7 @@ function SummaryTab({ sections }: { sections: SectionRecord[] }) {
     <div className="space-y-3 max-h-[400px] overflow-y-auto">
       {sections.map((s) => (
         <div key={s.sectionKey} className="text-sm">
+          <h4 className="font-medium text-gray-800 text-xs mb-1">{s.headingText || s.sectionId}</h4>
           <div className="flex flex-wrap gap-1 mb-1">
             {s.riskFlags.map((rf, i) => (
               <span
@@ -177,11 +261,14 @@ function RiskTab({ sections }: { sections: SectionRecord[] }) {
     <div className="space-y-2 max-h-[400px] overflow-y-auto">
       {flags.map((f, i) => (
         <div key={i} className="text-sm p-2 bg-gray-50 rounded">
-          <span
-            className={`inline-block text-xs px-1.5 py-0.5 rounded font-medium ${CATEGORY_COLORS[f.category]}`}
-          >
-            {CATEGORY_LABELS[f.category]}
-          </span>
+          <div className="flex items-center gap-2 mb-1">
+            <span
+              className={`inline-block text-xs px-1.5 py-0.5 rounded font-medium ${CATEGORY_COLORS[f.category]}`}
+            >
+              {CATEGORY_LABELS[f.category]}
+            </span>
+            <span className="text-[10px] text-gray-400">{f.heading}</span>
+          </div>
           <p className="text-gray-600 mt-1">{f.reason}</p>
         </div>
       ))}
@@ -197,11 +284,41 @@ function ChangesTab({ changes }: { changes: ChangeRecord[] }) {
     <div className="space-y-2 max-h-[400px] overflow-y-auto">
       {changes.map((c, i) => (
         <div key={c.id || i} className="text-sm p-2 bg-orange-50 rounded border border-orange-200">
-          <p className="text-orange-700 font-medium text-xs mb-1">
-            {new Date(c.changedAt).toLocaleDateString()}
-          </p>
-          <p className="text-gray-700">{c.diffSummary}</p>
+          <div className="flex items-center gap-2 mb-1">
+            <p className="text-orange-700 font-medium text-xs">
+              {new Date(c.changedAt).toLocaleDateString()}
+            </p>
+            {c.headingText && (
+              <span className="text-[10px] text-gray-400">{c.headingText}</span>
+            )}
+          </div>
+          <p className="text-gray-700 mb-1">{c.diffSummary}</p>
+          {c.oldText && c.newText && (
+            <WordDiffView oldText={c.oldText} newText={c.newText} />
+          )}
         </div>
+      ))}
+    </div>
+  )
+}
+
+function WordDiffView({ oldText, newText }: { oldText: string; newText: string }) {
+  const diff = getWordDiff(oldText, newText)
+  return (
+    <div className="text-xs bg-white rounded border border-gray-200 p-2 max-h-32 overflow-y-auto font-mono leading-relaxed">
+      {diff.map((part: WordDiff, i: number) => (
+        <span
+          key={i}
+          className={
+            part.added
+              ? 'bg-green-100 text-green-800'
+              : part.removed
+              ? 'bg-red-100 text-red-800 line-through'
+              : 'text-gray-500'
+          }
+        >
+          {part.value}
+        </span>
       ))}
     </div>
   )

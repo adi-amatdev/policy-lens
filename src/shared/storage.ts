@@ -1,5 +1,5 @@
 import { openDB, type IDBPDatabase } from 'idb'
-import { type SectionRecord, type ChangeRecord, type DomainSummary, type RiskFlag } from './messages'
+import { type SectionRecord, type ChangeRecord, type DomainSummary } from './messages'
 
 const DB_NAME = 'policylens'
 const DB_VERSION = 1
@@ -96,6 +96,11 @@ export async function getSections(docId: string): Promise<SectionRecord[]> {
   return results
 }
 
+export async function getAllSections(): Promise<SectionRecord[]> {
+  const database = await getDB()
+  return database.getAll('sections')
+}
+
 export async function saveChange(change: ChangeRecord): Promise<void> {
   const database = await getDB()
   await database.add('changes', change)
@@ -116,19 +121,28 @@ export async function getChangesForDoc(docId: string): Promise<ChangeRecord[]> {
 export async function getAllDomains(): Promise<DomainSummary[]> {
   const database = await getDB()
   const docs = await database.getAll('documents')
+  const allSections = await getAllSections()
+
+  const sectionsByDoc = new Map<string, SectionRecord[]>()
+  for (const s of allSections) {
+    const list = sectionsByDoc.get(s.docId) || []
+    list.push(s)
+    sectionsByDoc.set(s.docId, list)
+  }
+
   const domainMap = new Map<string, { docCount: number; riskScores: number[]; lastChanged: number | null }>()
 
   for (const doc of docs) {
     const entry = domainMap.get(doc.domain) || {
       docCount: 0,
-      riskScores: [],
+      riskScores: [] as number[],
       lastChanged: null as number | null,
     }
     entry.docCount++
     if (doc.lastChangedAt && (!entry.lastChanged || doc.lastChangedAt > entry.lastChanged)) {
       entry.lastChanged = doc.lastChangedAt
     }
-    const sections = await getSections(doc.docId)
+    const sections = sectionsByDoc.get(doc.docId) || []
     const riskCount = sections.reduce((sum, s) => sum + s.riskFlags.length, 0)
     entry.riskScores.push(riskCount)
     domainMap.set(doc.domain, entry)
@@ -163,7 +177,19 @@ export async function setDocLastChanged(docId: string, changedAt: number): Promi
   }
 }
 
-export async function getDoc(docId: string) {
+export async function getDoc(docId: string): Promise<PolicyLensDB['documents']['value'] | undefined> {
   const database = await getDB()
   return database.get('documents', docId)
+}
+
+export async function clearAllData(): Promise<void> {
+  const database = await getDB()
+  const tx = database.transaction(['documents', 'sections', 'changes'], 'readwrite')
+  await Promise.all([
+    tx.objectStore('documents').clear(),
+    tx.objectStore('sections').clear(),
+    tx.objectStore('changes').clear(),
+  ])
+  await tx.done
+  db = null
 }

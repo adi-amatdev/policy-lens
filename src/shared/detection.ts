@@ -1,4 +1,5 @@
 import type { ExtractedSection, DocType } from './messages'
+import { headingSimilarity } from './diffing'
 
 const POLICY_URL_PATTERNS = [
   /\/terms(\/|$)/i,
@@ -177,7 +178,51 @@ export function discoverPolicyLinks(doc: Document, baseUrl: string): string[] {
 }
 
 export function extractPlainText(html: string): string {
-  const parser = new DOMParser()
-  const doc = parser.parseFromString(html, 'text/html')
-  return doc.body.textContent || ''
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+export function matchSectionsByHeading(
+  oldSections: { sectionId: string; headingText: string }[],
+  newSections: ExtractedSection[],
+  threshold = 0.5
+): Map<string, string> {
+  const matched = new Map<string, string>()
+  const used = new Set<string>()
+
+  for (const old of oldSections) {
+    let bestMatch = newSections.find((n) => n.id === old.sectionId)
+    if (bestMatch && !used.has(bestMatch.id)) {
+      matched.set(old.sectionId, bestMatch.id)
+      used.add(bestMatch.id)
+      continue
+    }
+
+    let bestScore = 0
+    let bestId: string | null = null
+    for (const n of newSections) {
+      if (used.has(n.id)) continue
+      const score = headingSimilarity(old.headingText, n.headingText)
+      if (score > bestScore) {
+        bestScore = score
+        bestId = n.id
+      }
+    }
+    if (bestId && bestScore >= threshold) {
+      matched.set(old.sectionId, bestId)
+      used.add(bestId)
+    }
+  }
+
+  return matched
 }

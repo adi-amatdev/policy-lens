@@ -20,6 +20,9 @@ export interface ExtractedSection {
 
 export interface SectionResult {
   sectionId: string
+  headingText: string
+  bodyText: string
+  bodyHash: string
   summary: string
   riskFlags: RiskFlag[]
 }
@@ -59,11 +62,15 @@ export type ExtensionMessage =
   | { type: 'PAGE_DETECTED'; url: string; domain: string; docType: DocType; sections: ExtractedSection[]; discoveredLinks: string[] }
   | { type: 'SUMMARIZE_SECTIONS'; docId: string; sections: ExtractedSection[] }
   | { type: 'SUMMARIZE_RESULT'; docId: string; results: SectionResult[] }
-  | { type: 'EXPLAIN_DIFF'; docId: string; sectionId: string; oldText: string; newText: string }
-  | { type: 'DIFF_RESULT'; docId: string; sectionId: string; diffSummary: string }
+  | { type: 'EXPLAIN_DIFF'; docId: string; sectionId: string; oldText: string; newText: string; headingText: string }
+  | { type: 'DIFF_RESULT'; docId: string; sectionId: string; headingText: string; oldText: string; newText: string; diffSummary: string }
   | { type: 'GET_ANALYSIS_FOR_TAB'; tabUrl: string }
   | { type: 'ANALYSIS_RESULT'; docId: string | null; sections: SectionRecord[]; changes: ChangeRecord[] }
   | { type: 'GET_DASHBOARD_DATA' }
   | { type: 'DASHBOARD_DATA'; domains: DomainSummary[] }
   | { type: 'CRAWL_REQUEST'; domain: string; urls: string[] }
   | { type: 'OFFSCREEN_READY' }
+  | { type: 'DELETE_ALL_DATA' }
+  | { type: 'DATA_DELETED' }
+  | { type: 'DELETE_MODEL_CACHE' }
+  | { type: 'MODEL_CACHE_DELETED' }

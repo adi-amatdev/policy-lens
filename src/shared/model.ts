@@ -1,4 +1,5 @@
-import type { ExtractedSection, SectionResult, RiskFlag } from './messages'
+import type { ExtractedSection, RiskFlag } from './messages'
+import { RISK_FLAG_PROMPT } from './riskFlags'
 
 type SummarizerBackend = 'builtin' | 'transformers' | 'none'
 
@@ -6,11 +7,7 @@ let backend: SummarizerBackend = 'none'
 let transformersPipeline: any = null
 let builtinSummarizer: any = null
 
-const BUILTIN_RISK_TEMPLATE = `Read the following policy section. Identify which of these categories apply, if any:
-data-sharing, arbitration, auto-renewal, unilateral-changes, liability-waiver, data-retention.
-For each that applies, give a one-sentence reason. Respond as JSON array.
-
-Section: {sectionText}`
+const MAX_CHUNK_CHARS = 3000
 
 export async function initModel(): Promise<SummarizerBackend> {
   if (backend !== 'none') return backend
@@ -39,8 +36,27 @@ export async function initModel(): Promise<SummarizerBackend> {
   }
 }
 
+function chunkText(text: string, maxChars: number): string[] {
+  if (text.length <= maxChars) return [text]
+  const chunks: string[] = []
+  const sentences = text.split(/(?<=[.!?])\s+/)
+  let current = ''
+  for (const sentence of sentences) {
+    if (current.length + sentence.length > maxChars && current.length > 0) {
+      chunks.push(current)
+      current = sentence
+    } else {
+      current = current ? current + ' ' + sentence : sentence
+    }
+  }
+  if (current) chunks.push(current)
+  return chunks
+}
+
 export async function summarizeSection(section: ExtractedSection): Promise<string> {
-  const prompt = `Summarize the following section of a legal/policy document in 2-3 plain-English sentences.
+  const chunks = chunkText(section.bodyText, MAX_CHUNK_CHARS)
+  if (chunks.length === 1) {
+    const prompt = `Summarize the following section of a legal/policy document in 2-3 plain-English sentences.
 Focus on what it means for the user practically. Do not use legal jargon.
 
 Section heading: "${section.headingText}"
@@ -48,28 +64,48 @@ Section text:
 """
 ${section.bodyText}
 """`
+    return runModel(prompt)
+  }
 
-  return runModel(prompt)
+  const summaries: string[] = []
+  for (let i = 0; i < chunks.length; i++) {
+    const prompt = `Summarize the following chunk of a legal/policy document section in 1-2 plain-English sentences.
+Section heading: "${section.headingText}" (part ${i + 1}/${chunks.length})
+Section text:
+"""
+${chunks[i]}
+"""`
+    const result = await runModel(prompt)
+    summaries.push(result)
+  }
+  const combined = summaries.join(' ')
+  const finalPrompt = `Combine these partial summaries into one concise 2-3 sentence summary:
+${combined}`
+  return runModel(finalPrompt)
 }
 
 export async function classifyRisk(bodyText: string): Promise<RiskFlag[]> {
-  const prompt = BUILTIN_RISK_TEMPLATE.replace('{sectionText}', bodyText)
+  const truncated = bodyText.length > MAX_CHUNK_CHARS ? bodyText.slice(0, MAX_CHUNK_CHARS) : bodyText
+  const prompt = RISK_FLAG_PROMPT.replace('{bodyText}', truncated)
   const result = await runModel(prompt)
   return extractRiskFlags(result)
 }
 
 export async function explainDiff(oldText: string, newText: string): Promise<string> {
+  const oldTruncated = oldText.length > MAX_CHUNK_CHARS ? oldText.slice(0, MAX_CHUNK_CHARS) : oldText
+  const newTruncated = newText.length > MAX_CHUNK_CHARS ? newText.slice(0, MAX_CHUNK_CHARS) : newText
   const prompt = `A company changed this section of their policy. Explain in 1-2 plain-English sentences what
 changed and why it matters to the user. Be specific about what is newly allowed, removed, or restricted.
+Do not restate the full text.
 
 Previous version:
 """
-${oldText}
+${oldTruncated}
 """
 
 New version:
 """
-${newText}
+${newTruncated}
 """`
 
   return runModel(prompt)

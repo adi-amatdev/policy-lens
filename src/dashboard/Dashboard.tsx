@@ -6,6 +6,8 @@ export default function Dashboard() {
   const [domains, setDomains] = useState<DomainSummary[]>([])
   const [recentChanges, setRecentChanges] = useState<ChangeRecord[]>([])
   const [loading, setLoading] = useState(true)
+  const [deleted, setDeleted] = useState(false)
+  const [cacheCleared, setCacheCleared] = useState(false)
 
   useEffect(() => {
     async function load() {
@@ -26,6 +28,21 @@ export default function Dashboard() {
     load()
   }, [])
 
+  function handleDeleteData() {
+    if (!confirm('Delete ALL stored policy data? This cannot be undone.')) return
+    chrome.runtime.sendMessage({ type: 'DELETE_ALL_DATA' } as ExtensionMessage, () => {
+      setDeleted(true)
+      setDomains([])
+      setRecentChanges([])
+    })
+  }
+
+  function handleClearCache() {
+    chrome.runtime.sendMessage({ type: 'DELETE_MODEL_CACHE' } as ExtensionMessage, () => {
+      setCacheCleared(true)
+    })
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -39,7 +56,26 @@ export default function Dashboard() {
       <div className="max-w-4xl mx-auto">
         <div className="flex items-center justify-between mb-6">
           <h1 className="text-2xl font-bold text-gray-900">PolicyLens Dashboard</h1>
-          <p className="text-xs text-gray-400 italic">AI-generated summaries, not legal advice</p>
+          <div className="flex items-center gap-3">
+            <p className="text-xs text-gray-400 italic">AI-generated summaries, not legal advice</p>
+          </div>
+        </div>
+
+        <div className="flex gap-2 mb-6">
+          <button
+            onClick={handleDeleteData}
+            disabled={deleted}
+            className="text-xs px-3 py-1.5 rounded border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-50"
+          >
+            {deleted ? '✓ Data Deleted' : 'Delete All Data'}
+          </button>
+          <button
+            onClick={handleClearCache}
+            disabled={cacheCleared}
+            className="text-xs px-3 py-1.5 rounded border border-orange-200 text-orange-600 hover:bg-orange-50 disabled:opacity-50"
+          >
+            {cacheCleared ? '✓ Cache Cleared' : 'Clear Model Cache'}
+          </button>
         </div>
 
         <section className="mb-8">
@@ -67,7 +103,10 @@ export default function Dashboard() {
                 <div key={c.id || i} className="bg-white p-3 rounded-lg border border-orange-200 shadow-sm">
                   <div className="flex items-center gap-2 mb-1">
                     <span className="text-sm font-medium text-gray-800">{c.domain}</span>
-                    <span className="text-xs text-gray-400">
+                    {c.headingText && (
+                      <span className="text-xs text-gray-400">— {c.headingText}</span>
+                    )}
+                    <span className="text-xs text-gray-400 ml-auto">
                       {new Date(c.changedAt).toLocaleString()}
                     </span>
                   </div>

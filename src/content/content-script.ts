@@ -1,4 +1,4 @@
-import { detectDocType, extractSections, discoverPolicyLinks, countBodySignals, isPolicyByBody } from '../shared/detection'
+import { detectDocType, extractSections, discoverPolicyLinks, isPolicyByBody } from '../shared/detection'
 import type { ExtensionMessage } from '../shared/messages'
 
 const doc = document
@@ -7,10 +7,9 @@ const title = doc.title
 
 const detection = detectDocType(url, title)
 
-if (detection.isPolicy || isPolicyByBody(doc.body.textContent || '')) {
+if (detection.isPolicy) {
   const sections = extractSections(doc)
   const discoveredLinks = discoverPolicyLinks(doc, url)
-  const bodySignals = countBodySignals(doc.body.textContent || '')
 
   let domain: string
   try {
@@ -25,17 +24,23 @@ if (detection.isPolicy || isPolicyByBody(doc.body.textContent || '')) {
     docType: detection.docType,
     sections: sections.length,
     discoveredLinks,
-    bodySignals,
+    confidence: detection.confidence,
   })
 
   if (sections.length > 0 || discoveredLinks.length > 0) {
-    chrome.runtime.sendMessage({
-      type: 'PAGE_DETECTED',
-      url,
-      domain,
-      docType: detection.docType,
-      sections,
-      discoveredLinks,
-    } as ExtensionMessage)
+    try {
+      chrome.runtime.sendMessage({
+        type: 'PAGE_DETECTED',
+        url,
+        domain,
+        docType: detection.docType,
+        sections,
+        discoveredLinks,
+      } as ExtensionMessage)
+    } catch (e) {
+      console.warn('[Content] Failed to send PAGE_DETECTED:', e)
+    }
   }
+} else if (isPolicyByBody(doc.body.textContent || '')) {
+  console.log('[Content] Possible policy page detected via body heuristic. Visit a known policy URL for reliable summarization.')
 }
