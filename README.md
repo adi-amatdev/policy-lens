@@ -10,7 +10,7 @@ PolicyLens detects policy pages in your browser, extracts and analyzes each sect
 - **Change detection:** Stores a snapshot of every policy you visit. When a policy is updated, PolicyLens diffs the old and new versions and highlights exactly what changed.
 - **Risk flags:** Hybrid detection combining semantic embedding similarity against risk category definitions with deterministic keyword anchors. Flags data sharing, forced arbitration, auto-renewal, unilateral changes, liability waivers, and excessive data retention.
 - **Dashboard:** A dedicated tab (`chrome://extensions` → PolicyLens options) showing every tracked policy, its risk profile, and a history of changes. Includes a search chat for querying analyzed policies.
-- **Auto-detection:** Recognizes policy pages by URL patterns (`/terms`, `/privacy`, `/legal`, etc.) and page structure (heading density + policy-specific keywords).
+<!-- - **Auto-detection:** Recognizes policy pages by URL patterns (`/terms`, `/privacy`, `/legal`, etc.) and page structure (heading density + policy-specific keywords). -->
 - **Model observability:** UI badge shows whether ML inference ran or fell back to keyword-only mode.
 
 ## Screenshots
