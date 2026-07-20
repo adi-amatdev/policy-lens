@@ -54,12 +54,14 @@ tc-summarizer/
 │   │   ├── storage.ts         # idb wrapper, schema from 04-DATA-MODEL
 │   │   ├── hashing.ts          # SHA-256 helper
 │   │   ├── diffing.ts          # jsdiff wrapper + section matcher
-│   │   ├── model.ts            # abstraction over Summarizer API vs Transformers.js
+│   │   ├── model.ts            # Transformers.js ML inference
 │   │   ├── detection.ts        # page-type heuristics
-│   │   └── riskFlags.ts        # risk category keyword/prompt definitions
+│   │   └── riskFlags.ts        # risk category definitions + colors
 │   └── styles.css
 └── public/
-    └── icons/ (16, 32, 48, 128 px png)
+    ├── icons/ (16, 32, 48, 128 px png)
+    ├── images/ (static images, logo)
+    └── ort/ (ONNX Runtime WASM binaries, ~23MB)
 ```
 
 ## 3. `manifest.config.ts`
@@ -110,9 +112,8 @@ Notes for the agent:
   needing a separate tab-management flow for MVP.
 - `<all_urls>` host permission is broad — fine for a hackathon demo, call it out as a known
   scope-down item for production (should be limited to domains the user has actually visited).
-- If targeting Chrome's built-in Summarizer/Prompt API, check current Chrome version requirements
-  and whether it needs `chrome://flags` enablement or an origin trial token on the target demo
-  machine — verify this BEFORE building against it, per the architecture doc's fallback design.
+- The ONNX Runtime WASM binary is bundled locally in `public/ort/` (~23MB) — no CDN dependency.
+  Model weights are downloaded from HuggingFace on first run and cached in the browser's Cache API.
 
 ## 4. `vite.config.ts`
 

@@ -1,5 +1,14 @@
 # Update Log
 
+## 2026-07-20
+- **Sync**: Updated all OKF docs to match actual implementation — Transformers.js is the primary (and only) inference backend, not a fallback. Removed Chrome Summarizer API (Gemini Nano) references.
+- **Sync**: messaging-contract.md — expanded ExtensionMessage to 20 variants (was 10), added `modelUsed`, `headingText`, `bodyText`, `bodyHash` to SectionResult, added `snippet` to RiskFlag.
+- **Sync**: data-model.md — added `modelUsed` field to SectionRecord, added `snippet` to RiskFlag.
+- **Sync**: architecture.md — fixed tech stack table, removed Summarizer API references, updated offscreen document description.
+- **Sync**: deployment.md — removed Chrome Summarizer API references from Firefox/Safari porting notes.
+- **Sync**: setup-and-scaffold.md — noted ONNX WASM bundled locally, removed Summarizer API caveats.
+- **Enrichment**: README.md — added screenshot from `public/images/policy-lens.png`, added consumer awareness section, fixed dashboard access description, clarified ONNX WASM bundling.
+
 ## 2026-07-19
 - **Creation**: Converted docs/ to OKF v0.1 bundle with 7 concept files, index, and log.
 - **Creation**: Split data model and messaging contract into separate concept files.

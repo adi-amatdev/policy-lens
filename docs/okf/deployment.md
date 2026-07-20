@@ -49,10 +49,9 @@ Firefox supports MV3 but with some API differences worth checking before porting
    API as of recent Firefox releases. The model-inference layer would need to run in the background
    script directly or in a hidden extension page loaded another way. Confirm current Firefox MV3
    support for this before committing time to a port.
-2. Firefox does not ship an equivalent to Chrome's built-in Summarizer/Prompt API (Gemini Nano) —
-   the Transformers.js fallback path becomes the *only* path on Firefox, not a fallback. This is
-   exactly why the architecture treats Transformers.js as a real backend rather than an emergency
-   fallback — porting to Firefox is mostly "does the offscreen-equivalent code work," not "add a
+2. Transformers.js is the only inference backend — there is no Chrome Summarizer API equivalent
+   in Firefox. The architecture already treats Transformers.js as the primary backend, so
+   porting to Firefox is mostly "does the offscreen-equivalent code work," not "add a
    new model integration."
 3. Use `web-ext` (Mozilla's CLI tool) for local testing and packaging:
    ```bash
@@ -67,7 +66,7 @@ Firefox supports MV3 but with some API differences worth checking before porting
 ## Safari (optional, lowest priority)
 Safari Web Extensions require converting via Xcode's `safari-web-extension-converter` and
 distributing through the Mac App Store or notarized outside it. Given Safari doesn't support
-`chrome.offscreen` or Chrome's built-in AI APIs either, this is a larger port than Firefox and
+`chrome.offscreen` either, this is a larger port than Firefox and
 should only be pursued if there's a specific reason to target Safari users post-hackathon.
 
 ## Related

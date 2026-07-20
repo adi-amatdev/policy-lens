@@ -41,10 +41,9 @@ timestamp: 2026-07-19T00:00:00Z
                                  ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │ offscreen/offscreen.ts (chrome.offscreen document, DOM context)       │
-│   - loads Transformers.js pipeline (fallback path) OR calls window.ai │
-│     / Summarizer API (primary path, actually available from any       │
-│     extension context with the right permission)                      │
-│   - runs: summarize(section), classifyRisk(section), explainDiff(a,b) │
+│   - loads Transformers.js pipeline for on-device inference             │
+│   - runs: analyzeSection(section) -> { summary, riskFlags, modelUsed } │
+│   - runs: explainDiff(oldText, newText) -> diffSummary                 │
 │   - streams results back to background                                │
 └─────────────────────────────────────────────────────────────────────┘
 
@@ -66,8 +65,7 @@ timestamp: 2026-07-19T00:00:00Z
 
 ## Why an offscreen document, not just the service worker
 MV3 service workers are DOM-less and get killed/suspended aggressively. Transformers.js needs a
-DOM/Worker context for WebGPU and model caching to behave predictably, and Chrome's built-in
-Summarizer/Prompt API is likewise designed to be called from a document context. `chrome.offscreen`
+DOM/Worker context for WebGPU and model caching to behave predictably. `chrome.offscreen`
 gives you a persistent, hidden document exactly for this kind of background compute — use it as the
 single place model calls happen. The service worker just routes messages; it never touches the
 model directly.
@@ -86,8 +84,7 @@ model directly.
 |---|---|---|
 | Bundler/dev server | Vite + `@crxjs/vite-plugin` | MV3-aware HMR, single config for all entry points |
 | UI | React + Tailwind | fast to build popup + dashboard with shared components |
-| Local LLM (primary) | Chrome built-in Summarizer / Prompt API (Gemini Nano) | zero download owned by you, on-device, already in Chrome |
-| Local LLM (fallback) | `@huggingface/transformers` (Transformers.js), e.g. `Xenova/distilbart-cnn-6-6` or a small instruct model | works in Chromium-based browsers when built-in API unavailable; Firefox requires a dedicated build to replace `chrome.offscreen` with a tab/worker-based model host |
+| On-device ML | `@huggingface/transformers` v4 + `Xenova/all-MiniLM-L6-v2` (ONNX q8) | Small quantized model (~23MB weights), runs via Transformers.js pipeline in offscreen document. ONNX Runtime WASM bundled locally — no CDN. |
 | Storage | IndexedDB via `idb` | chrome.storage.local has small quota; IndexedDB handles full document text + section history |
 | Hashing | Web Crypto `crypto.subtle.digest('SHA-256', ...)` | native, no dependency |
 | Diffing | `diff` (jsdiff), `diffWordsWithSpace` at the section level | mature, small, good for prose diffing |

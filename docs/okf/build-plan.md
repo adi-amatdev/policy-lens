@@ -17,9 +17,7 @@ never cut Tier 1 tasks to save Tier 3 tasks.
 - [ ] Run all commands in [Setup & Scaffold](./setup-and-scaffold.md)
 - [ ] Confirm `npm run dev` + "Load unpacked" shows the extension icon in Chrome with no console errors
 - [ ] Stub every file listed in the folder structure with a minimal export so imports resolve
-- [ ] Verify on the actual demo machine whether Chrome's Summarizer/Prompt API is available
-      without flags — record the answer, it decides which model path is "primary" for the rest of
-      the build
+- [ ] Verify ONNX Runtime WASM files are in `public/ort/` and bundled correctly
 
 ## Hour 1–2: Extraction + detection (shallow, all 3 demo sites)
 - [ ] `shared/detection.ts`: implement the 3-tier heuristic from the [Architecture](./architecture.md)
@@ -30,8 +28,8 @@ never cut Tier 1 tasks to save Tier 3 tasks.
 - [ ] Test against all 3 pre-selected demo sites — confirm section extraction is non-garbage on all 3
 
 ## Hour 2–3: Model abstraction + first end-to-end summary
-- [ ] `shared/model.ts`: implement `summarize(text): Promise<string>` with two backends
-      (Summarizer API call, Transformers.js pipeline), chosen by feature-detection at runtime
+- [ ] `shared/model.ts`: implement Transformers.js pipeline for embedding + risk classification
+      using `Xenova/all-MiniLM-L6-v2`. ONNX Runtime WASM loaded from `public/ort/`.
 - [ ] `offscreen/offscreen.ts`: receive `SUMMARIZE_SECTIONS` messages, run each section through
       `model.ts`, return summaries
 - [ ] `background/service-worker.ts`: wire `PAGE_DETECTED` -> offscreen summarize -> store result

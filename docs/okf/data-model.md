@@ -50,6 +50,7 @@ Key path: `sectionKey` (string, `` `${docId}::${sectionId}` ``), indexed on `doc
 | `bodyHash` | string | SHA-256 hex digest of `bodyText` |
 | `summary` | string | Model-generated plain-English summary |
 | `riskFlags` | RiskFlag[] | Array of flagged risk categories |
+| `modelUsed` | boolean | Whether ML inference ran (true) or fell back to keyword-only (false) |
 | `savedAt` | number | Epoch ms of last save |
 
 ```ts
@@ -62,6 +63,7 @@ interface SectionRecord {
   bodyHash: string
   summary: string
   riskFlags: RiskFlag[]
+  modelUsed: boolean
   savedAt: number
 }
 ```
@@ -72,6 +74,7 @@ interface RiskFlag {
   category: 'data-sharing' | 'arbitration' | 'auto-renewal' | 'unilateral-changes'
           | 'liability-waiver' | 'data-retention'
   reason: string    // one-line model-generated justification
+  snippet: string   // excerpt from the source text
 }
 ```
 

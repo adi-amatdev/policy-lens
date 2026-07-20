@@ -43,8 +43,10 @@ which calls the OpenAI API). The differentiators here are:
 - **Dashboard** (a full extension page, e.g. `dashboard.html`, opened via toolbar icon long-press
   or a "View full dashboard" link in the popup): lists every service/domain analyzed, per-domain
   risk score, last-changed date, and a timeline of changes across all tracked policies.
-- **Local model summarization**: Chrome's built-in Summarizer API (Gemini Nano) as primary path,
-  Transformers.js (WebGPU/WASM) as fallback when the built-in API is unavailable.
+- **Local model summarization**: Transformers.js (`@huggingface/transformers` v4) with
+  `Xenova/all-MiniLM-L6-v2` (ONNX q8) for on-device inference. ONNX Runtime WASM binary
+  is bundled locally (~23MB) — no CDN dependency. Summaries are extractive (MMR sentence
+  selection), not generative.
 - **Section-level diffing**: SHA-256 hash per structural section, stored with a timestamp; on
   revisit, compare hashes, diff only the changed sections, and have the model explain the delta.
 - **Risk flagging**: tag sections that match categories like data sharing/selling, arbitration
