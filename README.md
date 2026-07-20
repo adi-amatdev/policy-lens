@@ -128,6 +128,12 @@ demo/             Fixture HTML files for testing change detection
 
 On first analysis, the extension downloads the quantized model weights from Hugging Face. The ONNX Runtime WASM binary (~23MB) is bundled locally in the extension, no CDN dependency. After the initial model weight download, everything is cached in the browser's Cache API and loads near-instantly.
 
+## Future Enhancements
+
+- **Custom keyword flagger:** User-defined keywords and phrases for personalized risk detection. Set your own watchlist, get flagged when those terms appear in any policy.
+- **Mobile app tracker:** Companion layer for monitoring policy changes in mobile apps. Captures app-level policy snapshots and tracks changes independent of the browser extension.
+- **Cross-device sync:** Optional sync layer for sharing tracked policies across devices (browser extension + mobile companion).
+
 ## License
 
 MIT
